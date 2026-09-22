@@ -12,6 +12,7 @@ The current implementation in [ConfigMgrClientHealth.ps1](ConfigMgrClientHealth.
 
 - Configuration Manager client installation state and site assignment
 - Client version compliance against the configured minimum version
+- Windows 11 modern-version detection, including 24H2 and 26H2-era client health checks
 - Client provisioning mode and state message health
 - WUA handler and client certificate state
 - Log size and log history settings for the ConfigMgr client

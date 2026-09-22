@@ -396,6 +396,7 @@ Begin {
             "*Windows 7*" {$OSName = "Windows 7 " + $OSArchitecture}
             "*Windows 8.1*" {$OSName = "Windows 8.1 " + $OSArchitecture}
             "*Windows 10*" {$OSName = "Windows 10 " + $OSArchitecture}
+            "*Windows 11*" {$OSName = "Windows 11 " + $OSArchitecture}
             "*Server 2008*" {
                 if ($OS.Caption -like "*R2*") { $OSName = "Windows Server 2008 R2 " + $OSArchitecture }
                 else { $OSName = "Windows Server 2008 " + $OSArchitecture }
@@ -406,28 +407,40 @@ Begin {
             }
             "*Server 2016*" { $OSName = "Windows Server 2016 " + $OSArchitecture }
             "*Server 2019*" { $OSName = "Windows Server 2019 " + $OSArchitecture }
+            "*Server 2022*" { $OSName = "Windows Server 2022 " + $OSArchitecture }
+            "*Server 2025*" { $OSName = "Windows Server 2025 " + $OSArchitecture }
         }
         Write-Output $OSName
     }
 
-    Function Get-MissingUpdates {
-        $UpdateShare = Get-XMLConfigUpdatesShare
-        $OSName = Get-OperatingSystem
+    Function Get-OperatingSystemDisplayName {
+        $osName = Get-OperatingSystem
+        $buildNumber = $null
 
-        $build = $null
-        if ($OSName -like "*Windows 10*") {
-            $build = Get-CimInstance Win32_OperatingSystem | Select-Object -ExpandProperty BuildNumber
-            switch ($build) {
-                10240 {$OSName = $OSName + " 1507"}
-                10586 {$OSName = $OSName + " 1511"}
-                14393 {$OSName = $OSName + " 1607"}
-                15063 {$OSName = $OSName + " 1703"}
-                16299 {$OSName = $OSName + " 1709"}
-                17134 {$OSName = $OSName + " 1803"}
-                17763 {$OSName = $OSName + " 1809"}
-                default {$OSName = $OSName + " Insider Preview"}
+        try {
+            $osVersion = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+            if ($null -ne $osVersion) {
+                $buildNumber = [int]$osVersion.BuildNumber
             }
         }
+        catch {
+            $buildNumber = $null
+        }
+
+        $buildFamily = Get-WindowsBuildFamilyLabel -BuildNumber $buildNumber
+        if (($osName -like "*Windows 10*") -or ($osName -like "*Windows 11*")) {
+            if ($buildNumber -gt 0 -and $buildFamily -ne 'Legacy') {
+                $osName = "$osName $buildFamily"
+            }
+        }
+
+        Write-Verbose "Operating system triage label: $osName (Build=$buildNumber BuildFamily=$buildFamily)"
+        Write-Output $osName
+    }
+
+    Function Get-MissingUpdates {
+        $UpdateShare = Get-XMLConfigUpdatesShare
+        $OSName = Get-OperatingSystemDisplayName
 
         $Updates = $UpdateShare + "\" + $OSName + "\"
         $obj = New-Object PSObject @{}
@@ -689,7 +702,7 @@ Begin {
                 if ($fix -eq "true") {
                     $text = "BITS: Error. Remediating"
                     $Errors | Remove-BitsTransfer -ErrorAction SilentlyContinue
-                    Invoke-Expression -Command 'sc.exe sdset bits "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;AU)(A;;CCLCSWRPWPDTLOCRRC;;;PU)"' | out-null
+                    Start-Process -FilePath 'sc.exe' -ArgumentList 'sdset bits "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;AU)(A;;CCLCSWRPWPDTLOCRRC;;;PU)"' -Wait -NoNewWindow | Out-Null
                     $log.BITS = 'Remediated'
                     $obj = $true
                 }
@@ -856,6 +869,11 @@ Begin {
                 } | Select-Object -ExpandProperty Date | Measure-Latest
             }
             "*Windows 10*" {
+                $Date = $Searcher.QueryHistory(0, $HistoryCount) | Where-Object {
+                    ($_.ClientApplicationID -eq 'UpdateOrchestrator' -or $_.ClientApplicationID -eq 'ccmexec') -and ($_.Title -notmatch "Security Intelligence Update|Definition Update")
+                } | Select-Object -ExpandProperty Date | Measure-Latest
+            }
+            "*Windows 11*" {
                 $Date = $Searcher.QueryHistory(0, $HistoryCount) | Where-Object {
                     ($_.ClientApplicationID -eq 'UpdateOrchestrator' -or $_.ClientApplicationID -eq 'ccmexec') -and ($_.Title -notmatch "Security Intelligence Update|Definition Update")
                 } | Select-Object -ExpandProperty Date | Measure-Latest
@@ -1028,24 +1046,7 @@ Begin {
 
 
         Write-Verbose "Validating required updates is installed on the client. Required updates will be installed if missing on client."
-        #$OS = Get-WmiObject -class Win32_OperatingSystem
-        $OSName = Get-OperatingSystem
-
-
-        $build = $null
-        if ($OSName -like "*Windows 10*") {
-            $build = Get-CimInstance Win32_OperatingSystem | Select-Object -ExpandProperty BuildNumber
-            switch ($build) {
-                10240 {$OSName = $OSName + " 1507"}
-                10586 {$OSName = $OSName + " 1511"}
-                14393 {$OSName = $OSName + " 1607"}
-                15063 {$OSName = $OSName + " 1703"}
-                16299 {$OSName = $OSName + " 1709"}
-                17134 {$OSName = $OSName + " 1803"}
-                17763 {$OSName = $OSName + " 1809"}
-                default {$OSName = $OSName + " Insider Preview"}
-            }
-        }
+        $OSName = Get-OperatingSystemDisplayName
 
         $Updates = (Join-Path $UpdateShare $OSName)
         If ((Test-Path $Updates) -eq $true) {
@@ -1546,7 +1547,7 @@ Begin {
     }
 
     Function Remove-CCMOrphanedCache {
-        Write-Host "Clearing ConfigMgr orphaned Cache items."
+        Write-Verbose "Clearing ConfigMgr orphaned Cache items."
         try {
             $CCMCache = "$env:SystemDrive\Windows\ccmcache"
             $CCMCache = (New-Object -ComObject "UIResource.UIResourceMgr").GetCacheInfo().Location
@@ -1564,7 +1565,7 @@ Begin {
                 }
             }
         }
-        catch { Write-Host "Failed Clearing ConfigMgr orphaned Cache items." }
+        catch { Write-Warning 'Failed clearing ConfigMgr orphaned cache items.' }
         }
 
     Function Resolve-Client {
@@ -1575,7 +1576,8 @@ Begin {
             )
 
         $ClientShare = Get-XMLConfigClientShare
-        if ((Test-Path $ClientShare -ErrorAction SilentlyContinue) -eq $true) {
+        $ccmSetupPath = Join-Path $ClientShare 'ccmsetup.exe'
+        if ((Test-Path $ccmSetupPath -ErrorAction SilentlyContinue) -eq $true) {
             if ($FirstInstall -eq $true) { $text = 'Installing Configuration Manager Client.' }
             else { $text = 'Client tagged for reinstall. Reinstalling client...' }
             Write-Output $text
@@ -1591,8 +1593,8 @@ Begin {
             }
 
             if ($Uninstall -eq $true) {
-				Write-Verbose "Trigger ConfigMgr Client uninstallation using Invoke-Expression."
-				Invoke-Expression "&'$ClientShare\ccmsetup.exe' /uninstall"
+                Write-Verbose "Trigger ConfigMgr Client uninstallation using direct process invocation."
+                Start-Process -FilePath $ccmSetupPath -ArgumentList '/uninstall' -NoNewWindow | Out-Null
 
 				$launched = $true
 				do {
@@ -1605,9 +1607,9 @@ Begin {
                 } while ($launched -eq $true)
             }
 
-            Write-Verbose "Trigger ConfigMgr Client installation using Invoke-Expression."
-            Write-Verbose "Client install string: $ClientShare\ccmsetup.exe $ClientInstallProperties"
-            Invoke-Expression "&'$ClientShare\ccmsetup.exe' $ClientInstallProperties"
+            Write-Verbose "Trigger ConfigMgr Client installation using direct process invocation."
+            Write-Verbose "Client install string: $ccmSetupPath $ClientInstallProperties"
+            Start-Process -FilePath $ccmSetupPath -ArgumentList $ClientInstallProperties -NoNewWindow | Out-Null
 
 			$launched = $true
 			do {
@@ -1620,7 +1622,7 @@ Begin {
             } while ($launched -eq $true)
 
             if ($FirstInstall -eq $true) {
-                Write-Host "ConfigMgr Client was installed for the first time. Waiting 6 minutes for client to syncronize policy before proceeding."
+                Write-Warning 'ConfigMgr Client was installed for the first time. Waiting 6 minutes for client to synchronize policy before proceeding.'
                 Start-Sleep -Seconds 360
             }
 
@@ -1628,7 +1630,7 @@ Begin {
 
         }
         else {
-            $text = 'ERROR: Client tagged for reinstall, but failed to access fileshare: ' +$ClientShare
+            $text = 'ERROR: Client tagged for reinstall, but failed to access client installer: ' +$ccmSetupPath
             Write-Error $text
             Exit 1
         }
@@ -1638,7 +1640,7 @@ Begin {
         [CmdletBinding()]
         param ([string]$FilePath)
 
-        try { $Result = Start-Process -FilePath 'regsvr32.exe' -Args "/s `"$FilePath`"" -Wait -NoNewWindow -PassThru }
+        try { Start-Process -FilePath 'regsvr32.exe' -Args "/s `"$FilePath`"" -Wait -NoNewWindow | Out-Null }
         catch {}
     }
 
@@ -1691,18 +1693,74 @@ Begin {
         }
     }
 
+    Function Get-WindowsBuildFamilyLabel {
+        param(
+            [int]$BuildNumber = 0
+        )
+
+        if ($BuildNumber -ge 26000) { return '26H2' }
+        if ($BuildNumber -ge 25000) { return '25H2' }
+        if ($BuildNumber -ge 24000) { return '24H2' }
+        if ($BuildNumber -ge 23000) { return '23H2' }
+        if ($BuildNumber -ge 22000) { return '22H2' }
+        if ($BuildNumber -ge 19045) { return '22H2' }
+        if ($BuildNumber -ge 19044) { return '21H2' }
+        if ($BuildNumber -ge 19043) { return '21H1' }
+        if ($BuildNumber -ge 19042) { return '20H2' }
+        if ($BuildNumber -ge 19041) { return '2004' }
+        if ($BuildNumber -ge 18363) { return '1909' }
+        if ($BuildNumber -ge 18362) { return '1903' }
+        if ($BuildNumber -ge 17763) { return '1809' }
+        if ($BuildNumber -ge 17134) { return '1803' }
+        if ($BuildNumber -ge 16299) { return '1709' }
+        if ($BuildNumber -ge 15063) { return '1703' }
+        if ($BuildNumber -ge 14393) { return '1607' }
+        if ($BuildNumber -ge 10586) { return '1511' }
+        if ($BuildNumber -ge 10240) { return '1507' }
+
+        return 'Legacy'
+    }
+
     Function Repair-WMI {
         $text ='Repairing WMI'
         Write-Output $text
+
+        try {
+            $osName = Get-OperatingSystem
+            $buildNumber = $null
+            $osVersion = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+            if ($null -ne $osVersion) {
+                $buildNumber = [int]$osVersion.BuildNumber
+            }
+            $buildFamily = Get-WindowsBuildFamilyLabel -BuildNumber $buildNumber
+        }
+        catch {
+            $osName = 'Unknown OS'
+            $buildNumber = 0
+            $buildFamily = 'Unknown'
+        }
 
         # Check PATH
         if((! (@(($ENV:PATH).Split(";")) -contains "$env:SystemDrive\WINDOWS\System32\Wbem")) -and (! (@(($ENV:PATH).Split(";")) -contains "%systemroot%\System32\Wbem"))){
             $text = "WMI Folder not in search path!."
             Write-Warning $text
         }
-        # Stop WMI
-        Stop-Service -Force ccmexec -ErrorAction SilentlyContinue
-        Stop-Service -Force winmgmt
+
+        $ccmService = Get-Service -Name 'ccmexec' -ErrorAction SilentlyContinue
+        $wmiService = Get-Service -Name 'winmgmt' -ErrorAction SilentlyContinue
+
+        $text = "WMI repair starting. OS=$osName Build=$buildNumber BuildFamily=$buildFamily ccmexec=$($ccmService.Status) winmgmt=$($wmiService.Status)"
+        Write-Warning $text
+
+        if ($null -ne $ccmService -and $ccmService.Status -ne 'Stopped') {
+            Write-Warning "Stopping ccmexec service during WMI repair. Current status: $($ccmService.Status)"
+            Stop-Service -Name 'ccmexec' -Force -ErrorAction SilentlyContinue
+        }
+
+        if ($null -ne $wmiService -and $wmiService.Status -ne 'Stopped') {
+            Write-Warning "Stopping winmgmt service during WMI repair. Current status: $($wmiService.Status)"
+            Stop-Service -Name 'winmgmt' -Force -ErrorAction SilentlyContinue
+        }
 
         # WMI Binaries
         [String[]]$aWMIBinaries=@("unsecapp.exe","wmiadap.exe","wmiapsrv.exe","wmiprvse.exe","scrcons.exe")
@@ -1712,12 +1770,15 @@ Begin {
                 foreach($sBin in $aWMIBinaries){
                     if(Test-Path -Path $sBin){
                         $oCurrentBin=Get-Item -Path  $sBin
-                        & $oCurrentBin.FullName /RegServer
+                        if ($oCurrentBin -and $oCurrentBin.FullName) {
+                            Write-Warning "Registering WMI binary $($oCurrentBin.Name) from $($oCurrentBin.FullName) for OS=$osName build=$buildNumber buildFamily=$buildFamily"
+                            & $oCurrentBin.FullName /RegServer
+                        }
                     }
                     else{
                         # Warning only for System32
                         if($sWMIPath -eq $ENV:SystemRoot+"\System32\wbem"){
-                            Write-Warning "File $sBin not found!"
+                            Write-Warning "File $sBin not found during WMI repair for OS=$osName build=$buildNumber buildFamily=$buildFamily"
                         }
                     }
                 }
@@ -1727,9 +1788,25 @@ Begin {
 
         # Reregister Managed Objects
         Write-Verbose "Reseting Repository..."
-        & ($ENV:SystemRoot+"\system32\wbem\winmgmt.exe") /resetrepository
-        & ($ENV:SystemRoot+"\system32\wbem\winmgmt.exe") /salvagerepository
-        Start-Service winmgmt
+        $wmiExecutable = Join-Path $ENV:SystemRoot 'System32\wbem\winmgmt.exe'
+        if (Test-Path -Path $wmiExecutable) {
+            Write-Warning "Resetting WMI repository for OS=$osName build=$buildNumber buildFamily=$buildFamily"
+            & $wmiExecutable /resetrepository
+            & $wmiExecutable /salvagerepository
+        }
+        else {
+            Write-Warning "WMI repository executable not found for OS=$osName build=$buildNumber buildFamily=$buildFamily. Repair cannot continue with the repository reset."
+        }
+
+        $wmiService = Get-Service -Name 'winmgmt' -ErrorAction SilentlyContinue
+        if ($null -ne $wmiService -and $wmiService.Status -ne 'Running') {
+            Write-Warning "Starting winmgmt after repair attempt. Previous status: $($wmiService.Status) on OS=$osName build=$buildNumber buildFamily=$buildFamily"
+            Start-Service -Name 'winmgmt' -ErrorAction SilentlyContinue
+        }
+        else {
+            Write-Warning "WMI service recovered to running state for OS=$osName build=$buildNumber buildFamily=$buildFamily"
+        }
+
         $text = 'Tagging ConfigMgr client for reinstall'
         Write-Warning $text
     }
@@ -1886,7 +1963,7 @@ Begin {
         }
         elseif ($StartupType -like "Automatic (Delayed Start)") {
             # Handle Automatic Trigger Start the dirty way for these two services. Implement in a nice way in future version.
-            if ( (($name -eq "wuauserv") -or ($name -eq "W32Time")) -and (($OSName -like "Windows 10*") -or ($OSName -like "*Server 2016*")) ) {
+            if ( (($name -eq "wuauserv") -or ($name -eq "W32Time")) -and (($OSName -like "Windows 10*") -or ($OSName -like "Windows 11*") -or ($OSName -like "*Server 2016*")) ) {
                 if ($service.StartType -ne "Automatic") {
                     $text = "Configuring service $Name StartupType to: Automatic (Trigger Start)..."
                     Set-Service -Name $service.Name -StartupType Automatic
@@ -2445,12 +2522,11 @@ Begin {
         [Parameter(Position=0, Mandatory=$true)] [string]$ServerInstance,
         [Parameter(Position=1, Mandatory=$false)] [string]$Database,
         [Parameter(Position=2, Mandatory=$false)] [string]$Query,
-        [Parameter(Position=3, Mandatory=$false)] [string]$Username,
-        [Parameter(Position=4, Mandatory=$false)] [string]$Password,
-        [Parameter(Position=5, Mandatory=$false)] [Int32]$QueryTimeout=600,
-        [Parameter(Position=6, Mandatory=$false)] [Int32]$ConnectionTimeout=15,
-        [Parameter(Position=7, Mandatory=$false)] [ValidateScript({test-path $_})] [string]$InputFile,
-        [Parameter(Position=8, Mandatory=$false)] [ValidateSet("DataSet", "DataTable", "DataRow")] [string]$As="DataRow"
+        [Parameter(Position=3, Mandatory=$false)] [System.Management.Automation.PSCredential]$Credential,
+        [Parameter(Position=4, Mandatory=$false)] [Int32]$QueryTimeout=600,
+        [Parameter(Position=5, Mandatory=$false)] [Int32]$ConnectionTimeout=15,
+        [Parameter(Position=6, Mandatory=$false)] [ValidateScript({test-path $_})] [string]$InputFile,
+        [Parameter(Position=7, Mandatory=$false)] [ValidateSet("DataSet", "DataTable", "DataRow")] [string]$As="DataRow"
         )
 
         if ($InputFile)
@@ -2459,12 +2535,26 @@ Begin {
             $Query =  [System.IO.File]::ReadAllText("$filePath")
         }
 
-        $conn=new-object System.Data.SqlClient.SQLConnection
+        $conn = New-Object System.Data.SqlClient.SQLConnection
+        $connectionStringBuilder = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
+        $connectionStringBuilder['Server'] = $ServerInstance
+        $connectionStringBuilder['Connect Timeout'] = $ConnectionTimeout
 
-        if ($Username) { $ConnectionString = "Server={0};Database={1};User ID={2};Password={3};Trusted_Connection=False;Connect Timeout={4}" -f $ServerInstance,$Database,$Username,$Password,$ConnectionTimeout }
-        else { $ConnectionString = "Server={0};Database={1};Integrated Security=True;Connect Timeout={2}" -f $ServerInstance,$Database,$ConnectionTimeout }
+        if ($Database) {
+            $connectionStringBuilder['Database'] = $Database
+        }
 
-        $conn.ConnectionString=$ConnectionString
+        if ($Credential) {
+            $networkCredential = $Credential.GetNetworkCredential()
+            $connectionStringBuilder['Integrated Security'] = $false
+            $connectionStringBuilder['User ID'] = $networkCredential.UserName
+            $connectionStringBuilder['Password'] = $networkCredential.Password
+        }
+        else {
+            $connectionStringBuilder['Integrated Security'] = $true
+        }
+
+        $conn.ConnectionString = $connectionStringBuilder.ConnectionString
 
         #Following EventHandler is used for PRINT and RAISERROR T-SQL statements. Executed when -Verbose parameter specified by caller
         if ($PSBoundParameters.Verbose)
@@ -3246,19 +3336,8 @@ Process {
         $StartupText1 = "PowerShell version: " + $PSVersionTable.PSVersion + ". Script executing with Administrator rights."
         Write-Host $StartupText1
 
-        Write-Verbose "Determing if a task sequence is running."
-        try { $tsenv = New-Object -COMObject Microsoft.SMS.TSEnvironment | Out-Null }
-        catch { $tsenv = $null }
-
-        if ($tsenv -ne $null) {
-            $TSName = $tsenv.Value("_SMSTSAdvertID")
-            Write-Host "Task sequence $TSName is active executing on computer. ConfigMgr Client Health will not execute."
-            Exit 1
-         }
-         else {
-            $StartupText2 = "ConfigMgr Client Health " +$Version+ " starting."
-            Write-Host $StartupText2
-         }
+          $StartupText2 = "ConfigMgr Client Health " +$Version+ " starting."
+          Write-Host $StartupText2
     }
 
 

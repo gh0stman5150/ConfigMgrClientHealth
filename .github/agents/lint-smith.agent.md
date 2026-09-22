@@ -11,11 +11,11 @@ handoffs:
     prompt: 'Fix the concrete lint and static-analysis findings above with minimal changes while preserving repo-specific safety rules.'
     send: false
   - label: Add Missing Tests
-    agent: test-smith
+    agent: Test Smith
     prompt: 'Add or update tests for the code paths affected by the lint findings and fixes above.'
     send: false
   - label: Repair Help Or Docs
-    agent: doc-writer
+    agent: Doc Writer
     prompt: 'Update comment-based help, examples, or README content implicated by the lint findings above.'
     send: false
 ---
