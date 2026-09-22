@@ -50,7 +50,7 @@ For each relevant dependency, establish:
 - How failures propagate through terminating errors, native exit codes, job results,
   returned objects, and logs. Check for swallowed errors or false success reports.
 - Whether module resolution works in the documented execution context, including
-  standalone checkouts when supported. When the target depends on WindowsAdmin.Core,
+  standalone checkouts when supported. When the target has an existing shared dependency,
   inspect its actual available exports and consumer call sites before recommending
   shared helpers. If the dependency is unavailable, report that limitation rather
   than assuming a sibling checkout; do not invent APIs or copy shared implementations
@@ -106,10 +106,10 @@ or perform production remediation.
 
 - Implement only approved fixes, preserving unrelated changes and existing contracts.
   Approval to edit source does not authorize live endpoint operations or deployment.
-- Extend nearby Pester 6.2 tests using existing helpers and fixtures. Mock external
+- Extend nearby Pester tests with existing helpers and fixtures, using the version configured by CI. Mock external
   dependencies; cover the relevant rerun, partial-failure, state-loss, remoting, or
   cleanup scenario rather than adding every probe above to every repository.
-- Use WindowsAdmin.Core test helpers only where actually available and appropriate.
+- Reuse repository-local test helpers where available and appropriate.
   Do not invent a framework or treat an absent suite as a passing gate.
 - Immediately after the first substantive edit, run the cheapest focused safe check.
   Repair local defects and rerun it before expanding scope. Then run the owning

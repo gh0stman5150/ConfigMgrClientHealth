@@ -50,14 +50,14 @@ Keep end-user devices compliant with Configuration Manager client health expecta
 
 ## Testing and validation
 
-This repository does not currently contain a checked-in automated test suite. Safe validation for documentation or script changes should therefore include:
+The checked-in [Pester suite](../Tests/ConfigMgrClientHealth.Tests.ps1) runs through [CI](workflows/workspace-tests.yml). From the repository root, run `Invoke-Pester -Path ./Tests -Output Detailed` with the Pester version configured by that workflow. Record the actual runtime version and results. Additional validation should include:
 
 - PowerShell parse validation for [ConfigMgrClientHealth.ps1](../ConfigMgrClientHealth.ps1)
 - XML validation for [config.xml](../config.xml)
-- Manual execution in a non-production environment only
+- Manual execution only in an explicitly authorized non-production environment
 - Review of log and SQL output when the relevant features are enabled
 
-Do not claim live CM, SQL, or webservice validation without actually running it.
+Unit tests must load isolated functions and mock external effects; never execute or dot-source the full remediation entry point for test setup. The script has no Apply switch, and SupportsShouldProcess does not establish that every operation is preview-safe. Preserve XML-controlled remediation defaults. Do not claim live CM, SQL, or webservice validation without actually running it.
 
 ## Pull request expectations
 

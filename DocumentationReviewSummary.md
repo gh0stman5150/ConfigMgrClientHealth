@@ -37,7 +37,7 @@
 
 - Add a dedicated validation checklist for production rollout if the repository grows further.
 - Consider including a minimal example of a sanitized configuration profile for operators using this tool in non-production testing.
-- If the project later gains a formal test harness, align the documentation with a checked-in Pester or CI workflow.
+- Keep documentation aligned with the checked-in Pester suite and CI workflow as coverage and validation commands evolve.
 - Review the packaged release ZIP contents periodically so the documentation reflects the most current downloadable artifacts.
 
 ## Documentation quality assessment before and after review

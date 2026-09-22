@@ -38,7 +38,7 @@ Do not use this skill as a substitute for repository-specific operational rules.
 
 1. Inspect the request and relevant repository instructions, source, tests, manifests, dependency declarations, CI configuration, formatter, linter, and naming patterns before editing.
 2. Identify the target PowerShell edition and version, operating system, execution host, privilege model, execution environment, dependencies, and compatibility requirements.
-3. Check whether `WindowsAdmin.Core` or the repository's existing modules already provide needed shared behavior before adding duplicate helpers.
+3. Check the repository's existing functions for reusable behavior before adding duplicate helpers; preserve the self-contained script architecture.
 4. State important assumptions if the repository does not establish them. Request clarification only when a missing detail prevents a safe or correct result.
 5. Consult applicable official documentation for unfamiliar or version-sensitive behavior.
 6. Design the smallest maintainable change that meets the requirement, reusing safe project patterns.

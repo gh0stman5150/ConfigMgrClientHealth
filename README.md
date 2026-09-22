@@ -138,11 +138,11 @@ The script writes log output using a CMTrace-style format and can fall back to a
 
 ## Testing and validation
 
-This repository does not currently include a checked-in Pester test suite or CI automation. Safe validation should therefore focus on:
+The repository includes a [Pester regression suite](Tests/ConfigMgrClientHealth.Tests.ps1) and a [Windows CI workflow](.github/workflows/workspace-tests.yml). From the repository root, run `Invoke-Pester -Path ./Tests -Output Detailed` using the Pester version configured by the workflow. Tests load isolated functions instead of executing the remediation entry point. Mocked tests do not verify live integrations. Additional validation includes:
 
 - PowerShell parsing of the script entry point
 - XML validation of the configuration
-- Manual execution in a non-production test host
+- Manual execution on an explicitly authorized non-production test host
 - Review of local log output and SQL writes before wider rollout
 
 ## Contribution guidance
