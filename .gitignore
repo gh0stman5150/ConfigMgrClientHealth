@@ -1,0 +1,21 @@
+# Endpoint-Management .gitignore
+
+# Backup files — Git history is the backup mechanism
+*.bak
+
+# Log files
+*.log
+*.csv
+Logs/
+
+# Temporary files
+*.tmp
+~$*
+
+# PowerShell module cache
+PSModuleAnalysisCache
+
+# TestResults output
+TestResults/
+Tests/*.csv
+Tests/TestResults.xml

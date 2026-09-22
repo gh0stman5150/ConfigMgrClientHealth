@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     ConfigMgr Client Health is a tool that validates and automatically fixes errors on Windows computers managed by Microsoft Configuration Manager.
 .EXAMPLE
@@ -169,8 +169,8 @@ Begin {
         try { Invoke-RestMethod -Method $Method -Uri $URI -Body $Obj -ContentType $ContentType | Out-Null }
         catch {
             $ExceptionMessage = $_.Exception.Message
-            Write-Host "Error Invoking RestMethod $Method on URI $URI. Failed to update database using webservice. Exception: $ExceptionMessage"
-
+            Write-Warning "Error Invoking RestMethod $Method on URI $URI. Failed to update database using webservice. Exception: $ExceptionMessage"
+            return
         }
     }
 
@@ -190,8 +190,9 @@ Begin {
             $Obj = Invoke-RestMethod -Uri $URI
         }
         catch {
-            Write-Host "Error retrieving configuration from webservice $URI. Exception: $ExceptionMessage" -ForegroundColor Red
-            Exit 1
+            $ExceptionMessage = $_.Exception.Message
+            Write-Warning "Error retrieving configuration from webservice $URI. Exception: $ExceptionMessage"
+            return $null
         }
 
         Write-Output $Obj
@@ -210,8 +211,9 @@ Begin {
             $CIP = Invoke-RestMethod -Uri $URI
         }
         catch {
-            Write-Host "Error retrieving client install properties from webservice $URI. Exception: $ExceptionMessage" -ForegroundColor Red
-            Exit 1
+            $ExceptionMessage = $_.Exception.Message
+            Write-Warning "Error retrieving client install properties from webservice $URI. Exception: $ExceptionMessage"
+            return $null
         }
 
         $string = $CIP | Where-Object {$_.profileId -eq $ProfileID} | Select-Object -ExpandProperty cmd
@@ -239,8 +241,9 @@ Begin {
             $CS = Invoke-RestMethod -Uri $URI
         }
         catch {
-            Write-Host "Error retrieving client install properties from webservice $URI. Exception: $ExceptionMessage" -ForegroundColor Red
-            Exit 1
+            $ExceptionMessage = $_.Exception.Message
+            Write-Warning "Error retrieving client install properties from webservice $URI. Exception: $ExceptionMessage"
+            return $null
         }
 
         $obj = $CS | Where-Object {$_.profileId -eq $ProfileID} | Select-Object Name, StartupType, State, Uptime
@@ -358,8 +361,8 @@ Begin {
         }
         else { $Logfile = Get-LogFileName }
 
-        if ($mode -like "ClientInstall" ) { 
-            $text = "ConfigMgr Client installation failed. Agent not detected 10 minutes after triggering installation." 
+        if ($mode -like "ClientInstall" ) {
+            $text = "ConfigMgr Client installation failed. Agent not detected 10 minutes after triggering installation."
             $Severity = 3
         }
 
@@ -1525,7 +1528,7 @@ Begin {
             }
             #Write-Verbose 'Returning true to trigger restart of ccmexec service'
             #>
-            
+
             # Rewrote after the WMI Method stopped working in previous CM client version
             New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\CCM\Logging\@GLOBAL" -Name LogMaxHistory -PropertyType DWORD -Value $clientLogMaxHistory -Force | Out-Null
             New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\CCM\Logging\@GLOBAL" -Name LogMaxSize -PropertyType DWORD -Value $newLogSize -Force | Out-Null
@@ -1621,7 +1624,7 @@ Begin {
                 Start-Sleep -Seconds 360
             }
 
-            
+
 
         }
         else {
@@ -2426,7 +2429,8 @@ Begin {
         }
         catch {
             $text = "Error connecting to SQLDatabase $Database on SQL Server $SQLServer"
-            Write-Error -Message $text
+            $ExceptionMessage = $_.Exception.Message
+            Write-Warning -Message "$text. Exception: $ExceptionMessage"
             if (-NOT($FileLogLevel -like "clientinstall")) { Out-LogFile -Xml $xml -Text $text -Severity 3}
             $obj = $false;
             Write-Verbose "SQL connection test failed"
@@ -2930,7 +2934,7 @@ Begin {
     Function Test-ConfigMgrHealthLogging {
         # Verifies that logfiles are not bigger than max history
 
-        
+
         $localLogging = (Get-XMLConfigLoggingLocalFile).ToLower()
         $fileshareLogging = (Get-XMLConfigLoggingEnable).ToLower()
 
