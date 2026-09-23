@@ -94,14 +94,18 @@ Describe 'Get-OperatingSystem' {
 
         Invoke-Expression $functionMatch.Value
 
-        Mock Get-CimInstance {
-            [pscustomobject]@{
-                Caption = 'Microsoft Windows 11 Pro'
-                OSArchitecture = '64-bit'
-            }
+        $PowerShellVersion = 7
+        $operatingSystem = [pscustomobject]@{
+            Caption = 'Microsoft Windows 11 Pro'
+            OSArchitecture = '64-bit'
         }
 
+        Mock Get-CimInstance { $operatingSystem }
+        Mock Get-WmiObject { $operatingSystem }
+
         $result = Get-OperatingSystem
+
+        Should -Invoke Get-CimInstance -Times 1 -Exactly
 
         $result | Should -Be 'Windows 11 64-Bit'
     }
