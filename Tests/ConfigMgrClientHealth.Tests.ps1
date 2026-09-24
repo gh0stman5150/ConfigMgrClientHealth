@@ -1297,7 +1297,8 @@ Describe 'Test-ConfigMgrClient' {
         # Stubs shadow script functions and cmdlets that are missing or strictly typed in PowerShell 7.
         function Remove-CimInstance { [CmdletBinding()] param([Parameter(ValueFromPipeline = $true)]$InputObject) }
         function Write-HostAndLog { param($Text, $ForegroundColor, $Severity) }
-        function Out-LogFile { param($Xml, $Text, $Mode, $Severity) }
+        # Typed like the real function so a positional message fails to bind to -Xml.
+        function Out-LogFile { param([xml]$Xml, $Text, $Mode, $Severity) }
         function Test-CcmSDF {}
         function Test-CcmSQLCELog {}
         function Get-XMLConfigCcmSQLCELog {}
@@ -1402,5 +1403,72 @@ Describe 'Test-ConfigMgrClient' {
         $log.ClientInstalledReason | Should -Be 'No agent found.'
         $log.ClientInstalled | Should -Be '2026-01-15 08:30:00'
         Should -Invoke Out-LogFile -Times 0 -Exactly
+    }
+
+    It 'logs a failed install to the share log when the agent is still missing' {
+        $script:ServiceInstalled = $false
+
+        Test-ConfigMgrClient -Log (New-ClientLog)
+
+        Should -Invoke Out-LogFile -Times 1 -Exactly -ParameterFilter { $Mode -eq 'ClientInstall' -and $Severity -eq 3 }
+    }
+
+    It 'skips the CcmSQLCE.log check when CcmSQLCELog is disabled' {
+        Test-ConfigMgrClient -Log (New-ClientLog)
+
+        Should -Invoke Test-CcmSQLCELog -Times 0 -Exactly
+    }
+
+    It 'reinstalls the client when CcmSQLCELog is enabled and the database is corrupt' {
+        $script:SqlCeLogEnable = 'True'
+        $script:SqlCeCorrupt = $true
+        $log = New-ClientLog
+
+        Test-ConfigMgrClient -Log $log
+
+        Should -Invoke Test-CcmSQLCELog -Times 1 -Exactly
+        $log.ClientInstalledReason | Should -Be 'ConfigMgr Client database corrupt.'
+        Should -Invoke Resolve-Client -Times 1 -Exactly -ParameterFilter { $FirstInstall -eq $false }
+    }
+
+    It 'starts a stopped CcmExec service when the CcmSQLCELog check is <Case>' -ForEach @(@{ Case = 'disabled'; Enable = 'False' }, @{ Case = 'enabled'; Enable = 'True' }) {
+        $script:SqlCeLogEnable = $Enable
+        $script:ServiceStatus = 'Stopped'
+
+        Test-ConfigMgrClient -Log (New-ClientLog)
+
+        Should -Invoke Start-Service -Times 1 -Exactly -ParameterFilter { $Name -eq 'CcmExec' }
+        Should -Invoke Set-Service -Times 0 -Exactly
+        Should -Invoke Resolve-Client -Times 0 -Exactly
+    }
+
+    It 'sets a stopped CcmExec service to Automatic before starting it' {
+        $script:ServiceStatus = 'Stopped'
+        $script:ServiceStartType = 'Disabled'
+
+        Test-ConfigMgrClient -Log (New-ClientLog) | Out-Null
+
+        Should -Invoke Set-Service -Times 1 -Exactly -ParameterFilter { $Name -eq 'CcmExec' -and $StartupType -eq 'Automatic' }
+        Should -Invoke Start-Service -Times 1 -Exactly
+    }
+
+    It 'does not start CcmExec when the database files are missing' {
+        $script:ServiceStatus = 'Stopped'
+        $script:SdfPresent = $false
+
+        Test-ConfigMgrClient -Log (New-ClientLog)
+
+        Should -Invoke Start-Service -Times 0 -Exactly
+    }
+
+    It 'reinstalls the client when CcmExec fails to start' {
+        $script:ServiceStatus = 'Stopped'
+        Mock Start-Service { Write-Error 'Cannot start service CcmExec' }
+        $log = New-ClientLog
+
+        Test-ConfigMgrClient -Log $log
+
+        $log.ClientInstalledReason | Should -Be 'Service not running, failed to start.'
+        Should -Invoke Resolve-Client -Times 1 -Exactly -ParameterFilter { $FirstInstall -eq $false }
     }
 }

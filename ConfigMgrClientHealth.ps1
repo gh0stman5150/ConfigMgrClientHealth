@@ -1112,12 +1112,10 @@ Begin {
                     New-ClientInstalledReason -Log $Log -Message "ConfigMgr Client database files missing."
                     Write-HostAndLog -Text "ConfigMgr Client database files missing. Reinstalling..."
                     $Reinstall = $true
-                    $Uninstall = $true
             }
 
             # Only test CM client local DB if this check is enabled
-            $testLocalDB = (Get-XMLConfigCcmSQLCELog).ToLower()
-            if ($testLocalDB -like "enable") {
+            if ((Get-XMLConfigCcmSQLCELog) -like 'True') {
                 Write-HostAndLog -Text "Testing CcmSQLCELog"
                 $LocalDB = Test-CcmSQLCELog
                 if ($LocalDB -eq $true) {
@@ -1125,22 +1123,21 @@ Begin {
                     New-ClientInstalledReason -Log $Log -Message "ConfigMgr Client database corrupt."
                     Write-HostAndLog -Text "ConfigMgr Client database corrupt. Reinstalling..."
                     $Reinstall = $true
-                    $Uninstall = $true
                 }
             }
 
             $CCMService = Get-Service -Name ccmexec -ErrorAction SilentlyContinue
 
-            # Reinstall if we are unable to start the CM client
-            if (($CCMService.Status -eq "Stopped") -and ($LocalDB -eq $false)) {
+            # Reinstall if we are unable to start the CM client. Skip the start when a database check already requires a reinstall.
+            if (($CCMService.Status -eq "Stopped") -and ($Reinstall -eq $false)) {
                 try {
                     Write-HostAndLog -Text "ConfigMgr Agent not running. Attempting to start it."
                     if ($CCMService.StartType -ne "Automatic") {
                         $text = "Configuring service CcmExec StartupType to: Automatic (Delayed Start)..."
                         Write-Output $text
-                        Set-Service -Name CcmExec -StartupType Automatic
+                        Set-Service -Name CcmExec -StartupType Automatic -ErrorAction Stop
                     }
-                    Start-Service -Name CcmExec
+                    Start-Service -Name CcmExec -ErrorAction Stop
                 }
                 catch {
                     $Reinstall = $true
@@ -1182,7 +1179,7 @@ Begin {
 
             # Test again if agent is installed
             if (Get-Service -Name ccmexec -ErrorAction SilentlyContinue) {}
-            else { Out-LogFile "ConfigMgr Client installation failed. Agent not detected 10 minutes after triggering installation."  -Mode "ClientInstall" -Severity 3}
+            else { Out-LogFile -Xml $xml -Text "ConfigMgr Client installation failed. Agent not detected 10 minutes after triggering installation." -Mode "ClientInstall" -Severity 3 }
         }
     }
 
