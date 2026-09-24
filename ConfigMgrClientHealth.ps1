@@ -2499,36 +2499,6 @@ Begin {
     }
 
 
-    # Gather info about the computer
-    Function Get-Info {
-        if ($PowerShellVersion -ge 6) {
-            $OS = Get-CimInstance Win32_OperatingSystem
-            $ComputerSystem = Get-CimInstance Win32_ComputerSystem
-            if ($ComputerSystem.Manufacturer -like 'Lenovo') { $Model = (Get-CimInstance Win32_ComputerSystemProduct).Version }
-            else { $Model = $ComputerSystem.Model }
-        }
-        else {
-            $OS = Get-WmiObject Win32_OperatingSystem
-            $ComputerSystem = Get-WmiObject Win32_ComputerSystem
-            if ($ComputerSystem.Manufacturer -like 'Lenovo') { $Model = (Get-WmiObject Win32_ComputerSystemProduct).Version }
-            else { $Model = $ComputerSystem.Model }
-        }
-
-        $obj = New-Object PSObject -Property @{
-            Hostname = $ComputerSystem.Name;
-            Manufacturer = $ComputerSystem.Manufacturer
-            Model = $Model
-            Operatingsystem = $OS.Caption;
-            Architecture = $OS.OSArchitecture;
-            Build = $OS.BuildNumber;
-            InstallDate = Get-SmallDateTime -Date ($OS.ConvertToDateTime($OS.InstallDate))
-            LastLoggedOnUser = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI\').LastLoggedOnUser;
-        }
-
-        $obj = $obj
-        Write-Output $obj
-    }
-
     # Start Getters - XML config file
     Function Get-LocalFilesPath {
         if ($config) {
