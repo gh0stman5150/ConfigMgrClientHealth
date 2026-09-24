@@ -2526,7 +2526,8 @@ Begin {
         [Parameter(Position=4, Mandatory=$false)] [Int32]$QueryTimeout=600,
         [Parameter(Position=5, Mandatory=$false)] [Int32]$ConnectionTimeout=15,
         [Parameter(Position=6, Mandatory=$false)] [ValidateScript({test-path $_})] [string]$InputFile,
-        [Parameter(Position=7, Mandatory=$false)] [ValidateSet("DataSet", "DataTable", "DataRow")] [string]$As="DataRow"
+        [Parameter(Position=7, Mandatory=$false)] [ValidateSet("DataSet", "DataTable", "DataRow")] [string]$As="DataRow",
+        [Parameter(Position=8, Mandatory=$false)] [System.Collections.IDictionary]$SqlParameters
         )
 
         if ($InputFile)
@@ -2567,6 +2568,16 @@ Begin {
         $conn.Open()
         $cmd=new-object system.Data.SqlClient.SqlCommand($Query,$conn)
         $cmd.CommandTimeout=$QueryTimeout
+
+        # Values are sent as parameters so they are never parsed as T-SQL
+        if ($SqlParameters) {
+            foreach ($key in $SqlParameters.Keys) {
+                $value = $SqlParameters[$key]
+                if ($null -eq $value) { $value = [System.DBNull]::Value }
+                [void]$cmd.Parameters.AddWithValue("@$key", $value)
+            }
+        }
+
         $ds=New-Object system.Data.DataSet
         $da=New-Object system.Data.SqlClient.SqlDataAdapter($cmd)
         [void]$da.fill($ds)
@@ -3204,54 +3215,76 @@ Begin {
         $table = 'dbo.Clients'
         $smallDateTime = Get-SmallDateTime
 
-        if ($null -ne $log.OSUpdates) {
-            # UPDATE
-            $q1 = "OSUpdates='"+$log.OSUpdates+"', "
-            # INSERT INTO
-            $q2 = "OSUpdates, "
-            # VALUES
-            $q3 = "'"+$log.OSUpdates+"', "
+        # Column = value. Every value is sent as a string parameter, as the previous string-built query did,
+        # so SQL performs the same implicit conversions and $null still becomes an empty string.
+        $columns = [ordered]@{
+            Operatingsystem = $log.Operatingsystem
+            Architecture = $log.Architecture
+            Build = $log.Build
+            Manufacturer = $log.Manufacturer
+            Model = $log.Model
+            InstallDate = $log.InstallDate
         }
-        else {
-            $q1 = $null
-            $q2 = $null
-            $q3 = $null
-        }
+        if ($null -ne $log.OSUpdates) { $columns['OSUpdates'] = $log.OSUpdates }
+        $columns['LastLoggedOnUser'] = $log.LastLoggedOnUser
+        $columns['ClientVersion'] = $log.ClientVersion
+        $columns['PSVersion'] = $log.PSVersion
+        $columns['PSBuild'] = $log.PSBuild
+        $columns['Sitecode'] = $log.Sitecode
+        $columns['Domain'] = $log.Domain
+        $columns['MaxLogSize'] = $log.MaxLogSize
+        $columns['MaxLogHistory'] = $log.MaxLogHistory
+        $columns['CacheSize'] = $log.CacheSize
+        $columns['ClientCertificate'] = $log.ClientCertificate
+        $columns['ProvisioningMode'] = $log.ProvisioningMode
+        $columns['DNS'] = $log.DNS
+        $columns['Drivers'] = $log.Drivers
+        $columns['Updates'] = $log.Updates
+        $columns['PendingReboot'] = $log.PendingReboot
+        $columns['LastBootTime'] = $log.LastBootTime
+        $columns['OSDiskFreeSpace'] = $log.OSDiskFreeSpace
+        $columns['Services'] = $log.Services
+        $columns['AdminShare'] = $log.AdminShare
+        $columns['StateMessages'] = $log.StateMessages
+        $columns['WUAHandler'] = $log.WUAHandler
+        $columns['WMI'] = $log.WMI
+        $columns['RefreshComplianceState'] = $log.RefreshComplianceState
+        $columns['HWInventory'] = $log.HWInventory
+        $columns['Version'] = $Version
+        if ($null -ne $log.ClientInstalled) { $columns['ClientInstalled'] = $log.ClientInstalled }
+        $columns['Timestamp'] = $smallDateTime
+        $columns['SWMetering'] = $log.SWMetering
+        $columns['BITS'] = $log.BITS
+        $columns['PatchLevel'] = $log.PatchLevel
+        $columns['ClientInstalledReason'] = $log.ClientInstalledReason
 
-        if ($null -ne $log.ClientInstalled) {
-            # UPDATE
-            $q10 = "ClientInstalled='"+$log.ClientInstalled+"', "
-            # INSERT INTO
-            $q20 = "ClientInstalled, "
-            # VALUES
-            $q30 = "'"+$log.ClientInstalled+"', "
-        }
-        else {
-            $q10 = $null
-            $q20 = $null
-            $q30 = $null
-        }
+        $sqlParameters = [ordered]@{ Hostname = [string]$log.Hostname }
+        foreach ($column in $columns.Keys) { $sqlParameters[$column] = [string]$columns[$column] }
+
+        $setList = ($columns.Keys | ForEach-Object { "$_=@$_" }) -join ', '
+        $columnList = (@('Hostname') + @($columns.Keys)) -join ', '
+        $valueList = (@('Hostname') + @($columns.Keys) | ForEach-Object { "@$_" }) -join ', '
 
 		#ADD ClientSettings.log...
         $query= "begin tran
-        if exists (SELECT * FROM $table WITH (updlock,serializable) WHERE Hostname='"+$log.Hostname+"')
+        if exists (SELECT * FROM $table WITH (updlock,serializable) WHERE Hostname=@Hostname)
         begin
-            UPDATE $table SET Operatingsystem='"+$log.Operatingsystem+"', Architecture='"+$log.Architecture+"', Build='"+$log.Build+"', Manufacturer='"+$log.Manufacturer+"', Model='"+$log.Model+"', InstallDate='"+$log.InstallDate+"', $q1 LastLoggedOnUser='"+$log.LastLoggedOnUser+"', ClientVersion='"+$log.ClientVersion+"', PSVersion='"+$log.PSVersion+"', PSBuild='"+$log.PSBuild+"', Sitecode='"+$log.Sitecode+"', Domain='"+$log.Domain+"', MaxLogSize='"+$log.MaxLogSize+"', MaxLogHistory='"+$log.MaxLogHistory+"', CacheSize='"+$log.CacheSize+"', ClientCertificate='"+$log.ClientCertificate+"', ProvisioningMode='"+$log.ProvisioningMode+"', DNS='"+$log.DNS+"', Drivers='"+$log.Drivers+"', Updates='"+$log.Updates+"', PendingReboot='"+$log.PendingReboot+"', LastBootTime='"+$log.LastBootTime+"', OSDiskFreeSpace='"+$log.OSDiskFreeSpace+"', Services='"+$log.Services+"', AdminShare='"+$log.AdminShare+"', StateMessages='"+$log.StateMessages+"', WUAHandler='"+$log.WUAHandler+"', WMI='"+$log.WMI+"', RefreshComplianceState='"+$log.RefreshComplianceState+"', HWInventory='"+$log.HWInventory+"', Version='"+$Version+"', $q10 Timestamp='"+$smallDateTime+"', SWMetering='"+$log.SWMetering+"', BITS='"+$log.BITS+"', PatchLevel='"+$Log.PatchLevel+"', ClientInstalledReason='"+$log.ClientInstalledReason+"'
-            WHERE Hostname = '"+$log.Hostname+"'
+            UPDATE $table SET $setList
+            WHERE Hostname = @Hostname
         end
         else
         begin
-            INSERT INTO $table (Hostname, Operatingsystem, Architecture, Build, Manufacturer, Model, InstallDate, $q2 LastLoggedOnUser, ClientVersion, PSVersion, PSBuild, Sitecode, Domain, MaxLogSize, MaxLogHistory, CacheSize, ClientCertificate, ProvisioningMode, DNS, Drivers, Updates, PendingReboot, LastBootTime, OSDiskFreeSpace, Services, AdminShare, StateMessages, WUAHandler, WMI, RefreshComplianceState, HWInventory, Version, $q20 Timestamp, SWMetering, BITS, PatchLevel, ClientInstalledReason)
-            VALUES ('"+$log.Hostname+"', '"+$log.Operatingsystem+"', '"+$log.Architecture+"', '"+$log.Build+"', '"+$log.Manufacturer+"', '"+$log.Model+"', '"+$log.InstallDate+"', $q3 '"+$log.LastLoggedOnUser+"', '"+$log.ClientVersion+"', '"+$log.PSVersion+"', '"+$log.PSBuild+"', '"+$log.Sitecode+"', '"+$log.Domain+"', '"+$log.MaxLogSize+"', '"+$log.MaxLogHistory+"', '"+$log.CacheSize+"', '"+$log.ClientCertificate+"', '"+$log.ProvisioningMode+"', '"+$log.DNS+"', '"+$log.Drivers+"', '"+$log.Updates+"', '"+$log.PendingReboot+"', '"+$log.LastBootTime+"', '"+$log.OSDiskFreeSpace+"', '"+$log.Services+"', '"+$log.AdminShare+"', '"+$log.StateMessages+"', '"+$log.WUAHandler+"', '"+$log.WMI+"', '"+$log.RefreshComplianceState+"', '"+$log.HWInventory+"', '"+$log.Version+"', $q30 '"+$smallDateTime+"', '"+$log.SWMetering+"', '"+$log.BITS+"', '"+$Log.PatchLevel+"', '"+$Log.ClientInstalledReason+"')
+            INSERT INTO $table ($columnList)
+            VALUES ($valueList)
         end
         commit tran"
 
-        try { Invoke-SqlCmd2 -ServerInstance $SQLServer -Database $Database -Query $query }
+        try { Invoke-SqlCmd2 -ServerInstance $SQLServer -Database $Database -Query $query -SqlParameters $sqlParameters }
         catch {
             $ErrorMessage = $_.Exception.Message
-            $text = "Error updating SQL with the following query: $query. Error: $ErrorMessage"
+            $text = "Error updating SQL for hostname $($log.Hostname). Error: $ErrorMessage"
             Write-Error $text
-            Out-LogFile -Xml $Xml -Text "ERROR Insert/Update SQL. SQL Query: $query `nSQL Error: $ErrorMessage" -Severity 3
+            Out-LogFile -Xml $Xml -Text "ERROR Insert/Update SQL for hostname $($log.Hostname). `nSQL Error: $ErrorMessage" -Severity 3
         }
         Write-Verbose "End Update-SQL"
     }

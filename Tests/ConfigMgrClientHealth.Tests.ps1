@@ -289,3 +289,119 @@ Describe 'webservice failure handling' {
         $output | Should -Match 'Web service failed'
     }
 }
+
+Describe 'Update-SQL' {
+    BeforeAll {
+        $sourceContent = Get-Content -Path $script:SourceFile -Raw
+        $pattern = '(?ms)^\s*Function\s+Update-SQL\s*\{.*?^\s*\}\s*(?=^\s*Function\s+|\z)'
+        $functionMatch = [regex]::Match($sourceContent, $pattern)
+
+        if (-not $functionMatch.Success) {
+            throw 'Unable to extract Update-SQL from ConfigMgrClientHealth.ps1'
+        }
+
+        $script:UpdateSqlSource = $functionMatch.Value
+
+        function Test-ValuesBeforeLogUpdate {}
+        function Get-XMLConfigSQLServer {}
+        function Get-SmallDateTime {}
+        function Out-LogFile { param($Xml, $Text, $Severity) }
+        function Invoke-Sqlcmd2 { param($ServerInstance, $Database, $Query, $SqlParameters) }
+
+        function New-TestLog {
+            $log = [ordered]@{}
+            foreach ($name in @('Hostname', 'Operatingsystem', 'Architecture', 'Build', 'Manufacturer', 'Model', 'InstallDate', 'OSUpdates', 'LastLoggedOnUser', 'ClientVersion', 'PSVersion', 'PSBuild', 'Sitecode', 'Domain', 'MaxLogSize', 'MaxLogHistory', 'CacheSize', 'ClientCertificate', 'ProvisioningMode', 'DNS', 'Drivers', 'Updates', 'PendingReboot', 'LastBootTime', 'OSDiskFreeSpace', 'Services', 'AdminShare', 'StateMessages', 'WUAHandler', 'WMI', 'RefreshComplianceState', 'HWInventory', 'Version', 'ClientInstalled', 'SWMetering', 'BITS', 'PatchLevel', 'ClientInstalledReason')) {
+                $log[$name] = 'OK'
+            }
+            $log.Hostname = 'PC01'
+            $log.OSUpdates = $null
+            $log.ClientInstalled = $null
+            [pscustomobject]$log
+        }
+    }
+
+    BeforeEach {
+        Invoke-Expression $script:UpdateSqlSource
+
+        $script:Xml = $null
+        $Version = '0.9.0'
+        $script:SqlCall = $null
+        Mock Test-ValuesBeforeLogUpdate {}
+        Mock Get-XMLConfigSQLServer { 'sqlserver01' }
+        Mock Get-SmallDateTime { '2026-01-01 00:00:00' }
+        Mock Out-LogFile {}
+        Mock Invoke-Sqlcmd2 { $script:SqlCall = @{ Query = $Query; SqlParameters = $SqlParameters } }
+    }
+
+    It 'passes values containing quotes as parameters instead of query text' {
+        $log = New-TestLog
+        $log.LastLoggedOnUser = "DOMAIN\o'brien"
+        $log.Model = "Model'); DROP TABLE dbo.Clients; --"
+
+        Update-SQL -Log $log
+
+        $script:SqlCall.Query | Should -Not -Match "o'brien"
+        $script:SqlCall.Query | Should -Not -Match 'DROP TABLE'
+        $script:SqlCall.Query | Should -Match 'LastLoggedOnUser=@LastLoggedOnUser'
+        $script:SqlCall.Query | Should -Match 'WHERE Hostname = @Hostname'
+        $script:SqlCall.SqlParameters['LastLoggedOnUser'] | Should -Be "DOMAIN\o'brien"
+        $script:SqlCall.SqlParameters['Model'] | Should -Be "Model'); DROP TABLE dbo.Clients; --"
+        $script:SqlCall.SqlParameters['Hostname'] | Should -Be 'PC01'
+    }
+
+    It 'omits OSUpdates and ClientInstalled when they are null' {
+        $log = New-TestLog
+
+        Update-SQL -Log $log
+
+        $script:SqlCall.Query | Should -Not -Match 'OSUpdates'
+        $script:SqlCall.Query | Should -Not -Match 'ClientInstalled[^R]'
+        $script:SqlCall.SqlParameters.Contains('OSUpdates') | Should -BeFalse
+        $script:SqlCall.SqlParameters.Contains('ClientInstalled') | Should -BeFalse
+    }
+
+    It 'includes OSUpdates and ClientInstalled when they have values' {
+        $log = New-TestLog
+        $log.OSUpdates = '2026-01-01 00:00:00'
+        $log.ClientInstalled = '2026-01-02 00:00:00'
+
+        Update-SQL -Log $log
+
+        $script:SqlCall.Query | Should -Match 'OSUpdates=@OSUpdates'
+        $script:SqlCall.Query | Should -Match 'ClientInstalled=@ClientInstalled'
+        $script:SqlCall.SqlParameters['OSUpdates'] | Should -Be '2026-01-01 00:00:00'
+        $script:SqlCall.SqlParameters['ClientInstalled'] | Should -Be '2026-01-02 00:00:00'
+    }
+
+    It 'sends null values as empty strings like the previous query did' {
+        $log = New-TestLog
+        $log.Manufacturer = $null
+
+        Update-SQL -Log $log
+
+        $script:SqlCall.SqlParameters['Manufacturer'] | Should -Be ''
+    }
+
+    It 'uses the same parameter for Version in the update and insert statements' {
+        $log = New-TestLog
+        $log.Version = 'stale'
+
+        Update-SQL -Log $log
+
+        $script:SqlCall.Query | Should -Match 'Version=@Version'
+        $script:SqlCall.Query | Should -Match 'VALUES \(.*@Version'
+        $script:SqlCall.SqlParameters['Version'] | Should -Be '0.9.0'
+    }
+
+    It 'does not write parameter values to the log when the SQL call fails' {
+        $log = New-TestLog
+        $log.LastLoggedOnUser = 'DOMAIN\user01'
+        Mock Invoke-Sqlcmd2 { throw [System.Exception]::new('Connection failed') }
+
+        { Update-SQL -Log $log -ErrorAction SilentlyContinue } | Should -Not -Throw
+
+        Should -Invoke Out-LogFile -Times 1 -Exactly -ParameterFilter {
+            $Text -match 'Connection failed' -and $Text -notmatch 'user01'
+        }
+    }
+}
