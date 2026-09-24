@@ -809,6 +809,49 @@ Describe 'Test-RefreshComplianceState' {
     }
 }
 
+Describe 'Script entry blocks' {
+    # The Process and End blocks cannot be extracted and run without running the script, so these tests check their structure.
+    BeforeAll {
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:SourceFile, [ref]$null, [ref]$null)
+        $script:ProcessBlock = $ast.ProcessBlock
+        $script:EndBlock = $ast.EndBlock
+
+        function Get-FirstCallOffset {
+            param($Block, [string]$Name)
+            $call = $Block.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] -and $args[0].GetCommandName() -eq $Name }, $true) |
+                Sort-Object { $_.Extent.StartOffset } | Select-Object -First 1
+            if ($null -eq $call) { throw "$Name is not called" }
+            $call.Extent.StartOffset
+        }
+    }
+
+    It 'stops End with exit code 1 before recording anything when Process did not run' {
+        $first = $script:EndBlock.Statements[0]
+        $first | Should -BeOfType [System.Management.Automation.Language.IfStatementAst]
+        $first.Clauses[0].Item1.Extent.Text | Should -Be '$null -eq $Log'
+        $first.Clauses[0].Item2.Extent.Text | Should -Match 'Exit 1'
+        $first.Extent.EndOffset | Should -BeLessThan (Get-FirstCallOffset -Block $script:EndBlock -Name 'Set-RegistryValue')
+    }
+
+    It 'saves LastRun in the sortable date format' {
+        $call = $script:EndBlock.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] -and $args[0].GetCommandName() -eq 'Set-RegistryValue' }, $true) | Select-Object -First 1
+        $call.Extent.Text | Should -Match ([regex]::Escape("-Value `$Date.ToString('s')"))
+    }
+
+    It 'rotates the log files before writing the first status message' {
+        $rotate = Get-FirstCallOffset -Block $script:ProcessBlock -Name 'Test-ConfigMgrHealthLogging'
+        $rotate | Should -BeLessThan (Get-FirstCallOffset -Block $script:ProcessBlock -Name 'Write-HostAndLog')
+        $rotate | Should -BeLessThan (Get-FirstCallOffset -Block $script:ProcessBlock -Name 'Test-InTaskSequence')
+    }
+
+    It 'does not reinstall the client again at the end of a run that already reinstalled it' {
+        $statements = @($script:ProcessBlock.Statements)
+        $index = [array]::FindIndex($statements, [Predicate[object]] { param($s) $s.Extent.Text -eq 'Test-ConfigMgrClient -Log $Log' })
+        $index | Should -BeGreaterThan -1
+        $statements[$index + 1].Extent.Text | Should -Be 'if ($null -ne $Log.ClientInstalled) { $reinstall = $false }'
+    }
+}
+
 Describe 'Function layout' {
     It 'declares every function so the test extractor can find it' {
         $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:SourceFile, [ref]$null, [ref]$null)

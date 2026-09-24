@@ -3186,6 +3186,8 @@ Begin {
     $newinstall = $false
     $restartCCMExec = $false
     $Reinstall = $false
+    # The Process block creates the log object. The End block uses $null to detect that Process never ran.
+    $Log = $null
 
 
     # If config.xml is used
@@ -3226,6 +3228,10 @@ Process {
         Exit 1
     }
     else {
+        # Runs before the first status message, because rotating a log deletes it along with anything this run already wrote.
+        Write-Verbose "Testing if log files are bigger than max history for logfiles."
+        Test-ConfigMgrHealthLogging
+
         # Will exit with errorcode 2 if in task sequence
         Test-InTaskSequence
 
@@ -3251,9 +3257,6 @@ Process {
     try{[datetime]$LastRun = Get-RegistryValue -Path $RegistryKey -Name $LastRunRegistryValueName}
     catch{$LastRun=[datetime]::MinValue}
     Write-HostAndLog -Text "Script last ran: $($LastRun)"
-
-    Write-Verbose "Testing if log files are bigger than max history for logfiles."
-    Test-ConfigMgrHealthLogging
 
     # Create the log object containing the result of health check
     $Log = New-LogObject
@@ -3289,6 +3292,9 @@ Process {
 
     Write-Verbose 'Testing if ConfigMgr client is installed. Installing if not.'
     Test-ConfigMgrClient -Log $Log
+    # Test-ConfigMgrClient sets ClientInstalled when it installed or reinstalled the client, for example after a WMI repair.
+    # Don't reinstall it a second time at the end of this run.
+    if ($null -ne $Log.ClientInstalled) { $reinstall = $false }
 
     Write-Verbose 'Validating if ConfigMgr client is running the minimum version...'
     if ((Test-ClientVersion -Log $log) -eq $true) {
@@ -3457,6 +3463,13 @@ Process {
 }
 
 End {
+    # Windows PowerShell 5.1 skips the Process block when the script is started with -File and redirected standard input.
+    # Report that as a failure instead of finishing with exit code 0 and no results.
+    if ($null -eq $Log) {
+        Write-HostAndLog -Text 'ERROR: The health checks did not run, so no results were recorded. Windows PowerShell skips the script''s Process block when it is started with -File and redirected standard input.' -Severity 3
+        Exit 1
+    }
+
     # Update database and logfile with results
 
     #Set the last run. Saved in the sortable format so it reads back as the same date in every culture and PowerShell version.

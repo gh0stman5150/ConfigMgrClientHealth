@@ -133,6 +133,7 @@ Use the following checks when the script does not behave as expected:
 - Confirm the client source share contains the expected `ccmsetup.exe` payload.
 - Review verbose output and the generated client health log for which remediation step failed.
 - Verify local permissions and whether the script is running under a sufficiently privileged context.
+- If the log says "The health checks did not run" and the script exits with code 1, the launcher started `powershell.exe -File` with redirected standard input. Windows PowerShell 5.1 then skips the script's health checks. Start it without redirecting standard input.
 
 The script writes log output using a CMTrace-style format and can fall back to a local `C:\ClientHealth` path depending on configuration.
 
