@@ -1034,3 +1034,237 @@ Describe 'Client schedule triggers' {
         }
     }
 }
+
+Describe 'PowerShell 7 compatibility' {
+    BeforeAll {
+        $sourceContent = Get-Content -Path $script:SourceFile -Raw
+        $functionNames = @(
+            'Get-CimOrWmiInstance', 'Remove-CimOrWmiInstance', 'ConvertFrom-WmiDateTime', 'Get-SmallDateTime',
+            'Get-ServiceUpTime', 'Test-ClientSettingsConfiguration', 'Get-LastReboot', 'Test-SCCMHardwareInventoryScan'
+        )
+        $script:CompatSource = foreach ($name in $functionNames) {
+            $pattern = "(?ms)^\s*Function\s+$([regex]::Escape($name))\s*\{.*?^\s*\}\s*(?=^\s*Function\s+|\z)"
+            $functionMatch = [regex]::Match($sourceContent, $pattern)
+            if (-not $functionMatch.Success) {
+                throw "Unable to extract $name from ConfigMgrClientHealth.ps1"
+            }
+            $functionMatch.Value
+        }
+
+        # Windows PowerShell-only cmdlets do not exist in PowerShell 7, and the CIM cmdlets require real
+        # CimInstance input, so these stubs give the mocks untyped parameters.
+        function Get-WmiObject {
+            [CmdletBinding()]
+            param([Parameter(Position = 0)][string]$Class, [string]$Namespace, [string]$Filter, [string[]]$Property)
+        }
+        function Remove-WmiObject { [CmdletBinding()] param([Parameter(ValueFromPipeline = $true)]$InputObject) }
+        function Remove-CimInstance { [CmdletBinding()] param([Parameter(ValueFromPipeline = $true)]$InputObject) }
+        function Get-EventLog { [CmdletBinding()] param($LogName, $Source, $EntryType, $Message, $Newest) }
+        function Get-XMLConfigLoggingTimeFormat {}
+        function Get-DateTime {}
+        function Get-XMLConfigMaxRebootDays {}
+        function Get-XMLConfigRebootApplicationEnable {}
+        function Start-RebootApplication {}
+        function Get-XMLConfigHardwareInventoryDays {}
+        function Get-XMLConfigHardwareInventoryFix {}
+        function Get-SCCMPolicyHardwareInventory {}
+        function Get-XMLConfigClientSettingsCheckFix {}
+        function Write-HostAndLog { param($Text) }
+
+        function ConvertTo-Dmtf { param([datetime]$Date) [System.Management.ManagementDateTimeConverter]::ToDmtfDateTime($Date) }
+    }
+
+    BeforeEach {
+        foreach ($source in $script:CompatSource) { Invoke-Expression $source }
+
+        $PowerShellVersion = 7
+        Mock Get-XMLConfigLoggingTimeFormat { 'Local' }
+        Mock Get-DateTime { 'no date' }
+        Mock Write-HostAndLog {}
+    }
+
+    Context 'ConvertFrom-WmiDateTime' {
+        It 'returns a [datetime] unchanged' {
+            $date = Get-Date '2026-01-15 08:30:00'
+
+            ConvertFrom-WmiDateTime -Date $date | Should -Be $date
+        }
+
+        It 'converts a DMTF string the same way ConvertToDateTime does' {
+            $dmtf = '20260115083000.000000+000'
+
+            ConvertFrom-WmiDateTime -Date $dmtf | Should -Be ([System.Management.ManagementDateTimeConverter]::ToDateTime($dmtf))
+        }
+
+        It 'returns nothing for an empty value' {
+            ConvertFrom-WmiDateTime -Date $null | Should -BeNullOrEmpty
+            ConvertFrom-WmiDateTime -Date '' | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'Remove-CimOrWmiInstance' {
+        BeforeEach {
+            Mock Remove-CimInstance {}
+            Mock Remove-WmiObject {}
+        }
+
+        It 'removes each piped instance with Remove-CimInstance on PowerShell 6 or later' {
+            @('a', 'b') | Remove-CimOrWmiInstance
+
+            Should -Invoke Remove-CimInstance -Times 2 -Exactly
+            Should -Invoke Remove-WmiObject -Times 0 -Exactly
+        }
+
+        It 'removes each piped instance with Remove-WmiObject on Windows PowerShell' {
+            $PowerShellVersion = 5
+
+            @('a', 'b') | Remove-CimOrWmiInstance
+
+            Should -Invoke Remove-WmiObject -Times 2 -Exactly
+            Should -Invoke Remove-CimInstance -Times 0 -Exactly
+        }
+    }
+
+    Context 'Get-LastReboot' {
+        BeforeEach {
+            $script:Xml = [xml]'<Configuration><Option Name="RebootApplication" Enable="True" /></Configuration>'
+            $script:BootTime = (Get-Date).AddDays(-2)
+            Mock Get-XMLConfigMaxRebootDays { 7 }
+            Mock Get-XMLConfigRebootApplicationEnable { 'True' }
+            Mock Start-RebootApplication {}
+            Mock Get-CimInstance { [pscustomobject]@{ LastBootUpTime = $script:BootTime } }
+            Mock Get-WmiObject { [pscustomobject]@{ LastBootUpTime = (ConvertTo-Dmtf $script:BootTime) } }
+        }
+
+        It 'reports a recent boot as OK on PowerShell <Version>' -ForEach @(@{ Version = 7 }, @{ Version = 5 }) {
+            $PowerShellVersion = $Version
+
+            $result = Get-LastReboot -Xml $script:Xml
+
+            $result | Should -BeLike 'Last boot time: *: OK'
+            Should -Invoke Start-RebootApplication -Times 0 -Exactly
+        }
+
+        It 'warns when the last boot is older than MaxRebootDays on PowerShell 7' {
+            $script:BootTime = (Get-Date).AddDays(-30)
+
+            Get-LastReboot -Xml $script:Xml -WarningVariable warnings -WarningAction SilentlyContinue | Out-Null
+
+            $warnings | Should -BeLike '*More than 7 days since last reboot*'
+        }
+    }
+
+    Context 'Test-SCCMHardwareInventoryScan' {
+        BeforeEach {
+            $script:ScanTime = Get-Date '2026-01-15 08:30:00'
+            Mock Get-XMLConfigHardwareInventoryDays { 7 }
+            Mock Get-XMLConfigHardwareInventoryFix { 'False' }
+            Mock Get-SCCMPolicyHardwareInventory {}
+            Mock Get-CimInstance {
+                [pscustomobject]@{ InventoryActionID = '{00000000-0000-0000-0000-000000000002}'; LastCycleStartedDate = (Get-Date '2020-01-01') },
+                [pscustomobject]@{ InventoryActionID = '{00000000-0000-0000-0000-000000000001}'; LastCycleStartedDate = $script:ScanTime }
+            }
+            Mock Get-WmiObject {
+                [pscustomobject]@{ InventoryActionID = '{00000000-0000-0000-0000-000000000002}'; LastCycleStartedDate = (ConvertTo-Dmtf (Get-Date '2020-01-01')) },
+                [pscustomobject]@{ InventoryActionID = '{00000000-0000-0000-0000-000000000001}'; LastCycleStartedDate = (ConvertTo-Dmtf $script:ScanTime) }
+            }
+        }
+
+        It 'records the last hardware inventory scan date on PowerShell <Version>' -ForEach @(@{ Version = 7 }, @{ Version = 5 }) {
+            $PowerShellVersion = $Version
+            $log = [pscustomobject]@{ HWInventory = $null }
+
+            Test-SCCMHardwareInventoryScan -Log $log | Out-Null
+
+            $log.HWInventory | Should -Be '2026-01-15 08:30:00'
+            Should -Invoke Get-SCCMPolicyHardwareInventory -Times 0 -Exactly
+        }
+
+        It 'reports OK when the scan is newer than the configured number of days' {
+            $script:ScanTime = (Get-Date).AddDays(-1)
+            $log = [pscustomobject]@{ HWInventory = $null }
+
+            Test-SCCMHardwareInventoryScan -Log $log | Should -Be 'ConfigMgr Hardware Inventory scan: OK'
+        }
+    }
+
+    Context 'Test-ClientSettingsConfiguration' {
+        BeforeEach {
+            $script:Policies = [System.Collections.Generic.List[object]]::new()
+            foreach ($source in 'CcmTaskSequence', 'CcmTaskSequence', 'Local') { $script:Policies.Add([pscustomobject]@{ PolicySource = $source }) }
+            Mock Get-XMLConfigClientSettingsCheckFix { 'True' }
+            Mock Get-CimInstance { @($script:Policies) }
+            Mock Get-WmiObject { @($script:Policies) }
+            Mock Remove-CimInstance { [void]$script:Policies.Remove($InputObject) }
+            Mock Remove-WmiObject { [void]$script:Policies.Remove($InputObject) }
+        }
+
+        It 'removes task sequence client settings on PowerShell 7' {
+            $log = [pscustomobject]@{ ClientSettings = $null }
+
+            Test-ClientSettingsConfiguration -Log $log
+
+            $log.ClientSettings | Should -Be 'Remediated'
+            Should -Invoke Remove-CimInstance -Times 2 -Exactly
+            Should -Invoke Get-CimInstance -ParameterFilter { $ClassName -eq 'CCM_ClientAgentConfig' -and $Namespace -eq 'root\ccm\Policy\DefaultMachine\RequestedConfig' }
+            $script:Policies.PolicySource | Should -Be @('Local')
+        }
+
+        It 'removes task sequence client settings on Windows PowerShell' {
+            $PowerShellVersion = 5
+            $log = [pscustomobject]@{ ClientSettings = $null }
+
+            Test-ClientSettingsConfiguration -Log $log
+
+            $log.ClientSettings | Should -Be 'Remediated'
+            Should -Invoke Remove-WmiObject -Times 2 -Exactly
+        }
+
+        It 'reports OK when no task sequence client settings exist' {
+            $script:Policies.RemoveAt(0); $script:Policies.RemoveAt(0)
+            $log = [pscustomobject]@{ ClientSettings = $null }
+
+            Test-ClientSettingsConfiguration -Log $log
+
+            $log.ClientSettings | Should -Be 'OK'
+            Should -Invoke Write-HostAndLog -Times 1 -Exactly -ParameterFilter { $Text -eq 'ClientSettings: OK' }
+        }
+    }
+
+    Context 'Get-ServiceUpTime' {
+        BeforeEach {
+            Mock Get-Service { [pscustomobject]@{ Name = 'TestSvc01'; DisplayName = 'Test Service 01' } }
+            Mock Get-EventLog { [pscustomobject]@{ TimeGenerated = (Get-Date).AddDays(-4).AddMinutes(-5) } }
+            Mock Get-WinEvent {
+                [pscustomobject]@{ Message = 'The Other Service service entered the running state.'; TimeCreated = (Get-Date).AddMinutes(-5) },
+                [pscustomobject]@{ Message = 'The Test Service 01 service entered the running state.'; TimeCreated = (Get-Date).AddDays(-3).AddMinutes(-5) }
+            }
+            Mock Get-CimInstance { [pscustomobject]@{ ProcessID = 4242 } }
+            Mock Get-Process { [pscustomobject]@{ StartTime = (Get-Date).AddDays(-5).AddMinutes(-5) } }
+        }
+
+        It 'reads the last start event with Get-WinEvent on PowerShell 7' {
+            Get-ServiceUpTime -Name 'TestSvc01' | Should -Be 3
+
+            Should -Invoke Get-EventLog -Times 0 -Exactly
+            Should -Invoke Get-WinEvent -Times 1 -Exactly -ParameterFilter {
+                $FilterHashtable.LogName -eq 'System' -and $FilterHashtable.ProviderName -eq 'Service Control Manager' -and $FilterHashtable.Id -eq 7036
+            }
+        }
+
+        It 'falls back to the service process start time when no start event matches' {
+            Mock Get-WinEvent { [pscustomobject]@{ Message = 'The Other Service service entered the running state.'; TimeCreated = (Get-Date) } }
+
+            Get-ServiceUpTime -Name 'TestSvc01' | Should -Be 5
+        }
+
+        It 'still uses Get-EventLog on Windows PowerShell' {
+            $PowerShellVersion = 5
+            Mock Get-WmiObject { [pscustomobject]@{ ProcessID = 4242 } }
+
+            Get-ServiceUpTime -Name 'TestSvc01' | Should -Be 4
+
+            Should -Invoke Get-WinEvent -Times 0 -Exactly
+        }
+    }
+}

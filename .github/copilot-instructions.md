@@ -52,6 +52,7 @@ Key function families:
 - `Test-*` / `Repair-*` / `Resolve-Client`: detection and remediation.
 - `Out-LogFile`: CMTrace-format logging. For a status message an operator should see, use `Write-HostAndLog`, which prints it and writes it to the local and share logs under the same config rules as the End block. Use `Write-Verbose` for diagnostics. Don't add bare `Write-Host` calls.
 - `Get-CimOrWmiInstance`: queries a WMI class with `Get-CimInstance` on PowerShell 6+ or `Get-WmiObject` on Windows PowerShell. Use it for new class queries instead of another `if ($PowerShellVersion -ge 6)` pair, and pass a WQL `-Filter` rather than piping every instance to `Where-Object` when the filter is exact.
+- `Remove-CimOrWmiInstance` and `ConvertFrom-WmiDateTime`: the matching delete and date conversion for those results. Don't call `Get-WmiObject`, `Remove-WmiObject`, `Get-EventLog`, or a result's `ConvertToDateTime()` method directly; they don't exist in PowerShell 7.
 - `Invoke-ClientSchedule`: triggers a ConfigMgr client schedule by ID through `Invoke-CimMethod` or `Invoke-WmiMethod`. The `Get-SCCMPolicy*` functions wrap it.
 
 **Coupled contracts:** `$Log` property names map to columns in `CreateDatabase.sql` and to the webservice payload. XML element and attribute names map to the `Get-XMLConfig*` getters. When you rename or add one, update every place it appears, or keep existing names unchanged.

@@ -158,6 +158,24 @@ Begin {
         else { Get-WmiObject -Class $ClassName @queryParameters }
     }
 
+    Function Remove-CimOrWmiInstance {
+        # Deletes WMI instances from Get-CimOrWmiInstance with Remove-CimInstance on PowerShell 6+ and Remove-WmiObject on Windows PowerShell.
+        [CmdletBinding()]
+        Param([Parameter(Mandatory=$true, ValueFromPipeline=$true)]$InputObject)
+        Process {
+            if ($PowerShellVersion -ge 6) { Remove-CimInstance -InputObject $InputObject }
+            else { Remove-WmiObject -InputObject $InputObject }
+        }
+    }
+
+    Function ConvertFrom-WmiDateTime {
+        # Returns a WMI date as [datetime]. Get-CimInstance already returns [datetime]; Get-WmiObject returns a DMTF string.
+        Param([Parameter(Mandatory=$false)]$Date)
+        if ($null -eq $Date -or $Date -eq '') { return }
+        if ($Date -is [datetime]) { return $Date }
+        [System.Management.ManagementDateTimeConverter]::ToDateTime($Date)
+    }
+
     Function Get-Hostname {
         <#
         if ($PowerShellVersion -ge 6) { $Obj = (Get-CimInstance Win32_ComputerSystem).Name }
@@ -287,7 +305,13 @@ Begin {
 
         #First try and get the service start time based on the last start event message in the system log.
         Try{
-            [datetime]$ServiceStartTime = (Get-EventLog -LogName System -Source "Service Control Manager" -EntryType Information -Message "*$($ServiceDisplayName)*running*" -Newest 1).TimeGenerated
+            # Get-EventLog does not exist in PowerShell 6+. Event 7036 is the Service Control Manager "entered the running state" message.
+            if ($PowerShellVersion -ge 6) {
+                $startEvent = Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Service Control Manager'; Id=7036} -ErrorAction Stop | Where-Object {$_.Message -like "*$($ServiceDisplayName)*running*"} | Select-Object -First 1
+                if ($null -eq $startEvent) { throw "No start event found for $Name" }
+                [datetime]$ServiceStartTime = $startEvent.TimeCreated
+            }
+            else { [datetime]$ServiceStartTime = (Get-EventLog -LogName System -Source "Service Control Manager" -EntryType Information -Message "*$($ServiceDisplayName)*running*" -Newest 1).TimeGenerated }
             Return (New-TimeSpan -Start $ServiceStartTime -End (Get-Date)).Days
         }
         Catch {
@@ -735,7 +759,7 @@ Begin {
 	Function Test-ClientSettingsConfiguration {
 		Param([Parameter(Mandatory=$true)]$Log)
 
-		$ClientSettingsConfig = @(Get-WmiObject -Namespace "root\ccm\Policy\DefaultMachine\RequestedConfig" -Class CCM_ClientAgentConfig -ErrorAction SilentlyContinue | Where-Object {$_.PolicySource -eq "CcmTaskSequence"})
+		$ClientSettingsConfig = @(Get-CimOrWmiInstance CCM_ClientAgentConfig -Namespace "root\ccm\Policy\DefaultMachine\RequestedConfig" -ErrorAction SilentlyContinue | Where-Object {$_.PolicySource -eq "CcmTaskSequence"})
 
 		if ($ClientSettingsConfig.Count -gt 0) {
 
@@ -744,8 +768,8 @@ Begin {
 			if ($fix -eq "true") {
 				$text = "ClientSettings: Error. Remediating"
 				DO {
-					Get-WmiObject -Namespace "root\ccm\Policy\DefaultMachine\RequestedConfig" -Class CCM_ClientAgentConfig | Where-Object {$_.PolicySource -eq "CcmTaskSequence"} | Select-Object -first 1000 | ForEach-Object {Remove-WmiObject -InputObject $_}
-				} Until (!(Get-WmiObject -Namespace "root\ccm\Policy\DefaultMachine\RequestedConfig" -Class CCM_ClientAgentConfig | Where-Object {$_.PolicySource -eq "CcmTaskSequence"} | Select-Object -first 1))
+					Get-CimOrWmiInstance CCM_ClientAgentConfig -Namespace "root\ccm\Policy\DefaultMachine\RequestedConfig" | Where-Object {$_.PolicySource -eq "CcmTaskSequence"} | Select-Object -first 1000 | ForEach-Object {Remove-CimOrWmiInstance -InputObject $_}
+				} Until (!(Get-CimOrWmiInstance CCM_ClientAgentConfig -Namespace "root\ccm\Policy\DefaultMachine\RequestedConfig" | Where-Object {$_.PolicySource -eq "CcmTaskSequence"} | Select-Object -first 1))
 				$log.ClientSettings = 'Remediated'
 				$obj = $true
 			}
@@ -1140,7 +1164,7 @@ Begin {
 
                 # Clear the WMI namespace to avoid having to uninstall first
                 # This is the same action the install after an uninstall would perform
-                Get-WmiObject -Query "Select * from __Namespace WHERE Name='CCM'" -Namespace root | Remove-WmiObject
+                Get-CimOrWmiInstance __Namespace -Namespace root -Filter "Name='CCM'" | Remove-CimOrWmiInstance
 
                 $Reinstall = $true
                 New-ClientInstalledReason -Log $Log -Message "Failed to connect to SMS_Client WMI class."
@@ -2133,12 +2157,11 @@ Begin {
         if ($execute -eq $true) {
 
             [float]$maxRebootDays = Get-XMLConfigMaxRebootDays
-            if ($PowerShellVersion -ge 6) { $wmi = Get-CimInstance Win32_OperatingSystem }
-            else { $wmi = Get-WmiObject Win32_OperatingSystem }
+            $wmi = Get-CimOrWmiInstance Win32_OperatingSystem
 
-            $lastBootTime = $wmi.ConvertToDateTime($wmi.LastBootUpTime)
+            $lastBootTime = ConvertFrom-WmiDateTime -Date $wmi.LastBootUpTime
 
-            $uptime = (Get-Date) - ($wmi.ConvertToDateTime($wmi.lastbootuptime))
+            $uptime = (Get-Date) - $lastBootTime
             if ($uptime.TotalDays -lt $maxRebootDays) {
                 $text = 'Last boot time: ' +$lastBootTime + ': OK'
                 Write-Output $text
@@ -2230,8 +2253,7 @@ Begin {
 
         Write-Verbose "Start Test-SCCMHardwareInventoryScan"
         $days = Get-XMLConfigHardwareInventoryDays
-        if ($PowerShellVersion -ge 6) { $wmi = Get-CimInstance -Namespace root\ccm\invagt -Class InventoryActionStatus | Where-Object {$_.InventoryActionID -eq '{00000000-0000-0000-0000-000000000001}'} | Select-Object @{label='HWSCAN';expression={$_.ConvertToDateTime($_.LastCycleStartedDate)}} }
-        else { $wmi = Get-WmiObject -Namespace root\ccm\invagt -Class InventoryActionStatus | Where-Object {$_.InventoryActionID -eq '{00000000-0000-0000-0000-000000000001}'} | Select-Object @{label='HWSCAN';expression={$_.ConvertToDateTime($_.LastCycleStartedDate)}} }
+        $wmi = Get-CimOrWmiInstance InventoryActionStatus -Namespace root\ccm\invagt | Where-Object {$_.InventoryActionID -eq '{00000000-0000-0000-0000-000000000001}'} | Select-Object @{label='HWSCAN';expression={ConvertFrom-WmiDateTime -Date $_.LastCycleStartedDate}}
         $HWScanDate = $wmi | Select-Object -ExpandProperty HWSCAN
         $HWScanDate = Get-SmallDateTime $HWScanDate
         $minDate = Get-SmallDateTime((Get-Date).AddDays(-$days))
@@ -2243,8 +2265,7 @@ Begin {
                 Get-SCCMPolicyHardwareInventory
 
                 # Get the new date after policy trigger
-                if ($PowerShellVersion -ge 6) { $wmi = Get-CimInstance -Namespace root\ccm\invagt -Class InventoryActionStatus | Where-Object {$_.InventoryActionID -eq '{00000000-0000-0000-0000-000000000001}'} | Select-Object @{label='HWSCAN';expression={$_.ConvertToDateTime($_.LastCycleStartedDate)}} }
-                else { $wmi = Get-WmiObject -Namespace root\ccm\invagt -Class InventoryActionStatus | Where-Object {$_.InventoryActionID -eq '{00000000-0000-0000-0000-000000000001}'} | Select-Object @{label='HWSCAN';expression={$_.ConvertToDateTime($_.LastCycleStartedDate)}} }
+                $wmi = Get-CimOrWmiInstance InventoryActionStatus -Namespace root\ccm\invagt | Where-Object {$_.InventoryActionID -eq '{00000000-0000-0000-0000-000000000001}'} | Select-Object @{label='HWSCAN';expression={ConvertFrom-WmiDateTime -Date $_.LastCycleStartedDate}}
                 $HWScanDate = $wmi | Select-Object -ExpandProperty HWSCAN
                 $HWScanDate = Get-SmallDateTime -Date $HWScanDate
             }
