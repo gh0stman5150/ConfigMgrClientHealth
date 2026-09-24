@@ -140,6 +140,24 @@ Begin {
         Write-Output $obj
     }
 
+    Function Get-CimOrWmiInstance {
+        # Queries a WMI class with Get-CimInstance on PowerShell 6+ and Get-WmiObject on Windows PowerShell.
+        # Common parameters such as -ErrorAction pass through to the underlying cmdlet.
+        [CmdletBinding()]
+        Param(
+            [Parameter(Mandatory=$true, Position=0)][string]$ClassName,
+            [Parameter(Mandatory=$false)][string]$Namespace,
+            [Parameter(Mandatory=$false)][string]$Filter,
+            [Parameter(Mandatory=$false)][string[]]$Property
+        )
+        $queryParameters = @{}
+        foreach ($name in 'Namespace', 'Filter', 'Property') {
+            if ($PSBoundParameters.ContainsKey($name)) { $queryParameters[$name] = $PSBoundParameters[$name] }
+        }
+        if ($PowerShellVersion -ge 6) { Get-CimInstance -ClassName $ClassName @queryParameters }
+        else { Get-WmiObject -Class $ClassName @queryParameters }
+    }
+
     Function Get-Hostname {
         <#
         if ($PowerShellVersion -ge 6) { $Obj = (Get-CimInstance Win32_ComputerSystem).Name }
@@ -380,8 +398,7 @@ Begin {
     }
 
     Function Get-OperatingSystem {
-        if ($PowerShellVersion -ge 6) { $OS = Get-CimInstance Win32_OperatingSystem }
-        else { $OS = Get-WmiObject Win32_OperatingSystem }
+        $OS = Get-CimOrWmiInstance Win32_OperatingSystem
 
 
         # Handles different OS languages

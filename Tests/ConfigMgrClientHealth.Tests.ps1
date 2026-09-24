@@ -94,6 +94,13 @@ Describe 'Get-OperatingSystem' {
 
         Invoke-Expression $functionMatch.Value
 
+        $helperPattern = '(?ms)^\s*Function\s+Get-CimOrWmiInstance\s*\{.*?^\s*\}\s*(?=^\s*Function\s+|\z)'
+        $helperMatch = [regex]::Match($sourceContent, $helperPattern)
+        if (-not $helperMatch.Success) {
+            throw 'Unable to extract Get-CimOrWmiInstance from ConfigMgrClientHealth.ps1'
+        }
+        Invoke-Expression $helperMatch.Value
+
         $PowerShellVersion = 7
         $operatingSystem = [pscustomobject]@{
             Caption = 'Microsoft Windows 11 Pro'
@@ -403,5 +410,68 @@ Describe 'Update-SQL' {
         Should -Invoke Out-LogFile -Times 1 -Exactly -ParameterFilter {
             $Text -match 'Connection failed' -and $Text -notmatch 'user01'
         }
+    }
+}
+
+Describe 'Get-CimOrWmiInstance' {
+    BeforeAll {
+        $sourceContent = Get-Content -Path $script:SourceFile -Raw
+        $pattern = '(?ms)^\s*Function\s+Get-CimOrWmiInstance\s*\{.*?^\s*\}\s*(?=^\s*Function\s+|\z)'
+        $functionMatch = [regex]::Match($sourceContent, $pattern)
+
+        if (-not $functionMatch.Success) {
+            throw 'Unable to extract Get-CimOrWmiInstance from ConfigMgrClientHealth.ps1'
+        }
+
+        $script:HelperSource = $functionMatch.Value
+    }
+
+    BeforeEach {
+        Invoke-Expression $script:HelperSource
+
+        Mock Get-CimInstance { 'cim' }
+        Mock Get-WmiObject { 'wmi' }
+    }
+
+    It 'uses Get-CimInstance with every supplied parameter on PowerShell 6 or later' {
+        $PowerShellVersion = 7
+
+        $result = Get-CimOrWmiInstance Win32_Service -Namespace 'root\cimv2' -Filter "Name='winmgmt'" -Property StartMode, Status
+
+        $result | Should -Be 'cim'
+        Should -Invoke Get-WmiObject -Times 0 -Exactly
+        Should -Invoke Get-CimInstance -Times 1 -Exactly -ParameterFilter {
+            $ClassName -eq 'Win32_Service' -and $Namespace -eq 'root\cimv2' -and $Filter -eq "Name='winmgmt'" -and ($Property -join ',') -eq 'StartMode,Status'
+        }
+    }
+
+    It 'uses Get-WmiObject with every supplied parameter on Windows PowerShell' {
+        $PowerShellVersion = 5
+
+        $result = Get-CimOrWmiInstance Win32_Service -Namespace 'root\cimv2' -Filter "Name='winmgmt'" -Property StartMode, Status
+
+        $result | Should -Be 'wmi'
+        Should -Invoke Get-CimInstance -Times 0 -Exactly
+        Should -Invoke Get-WmiObject -Times 1 -Exactly -ParameterFilter {
+            $Class -eq 'Win32_Service' -and $Namespace -eq 'root\cimv2' -and $Filter -eq "Name='winmgmt'" -and ($Property -join ',') -eq 'StartMode,Status'
+        }
+    }
+
+    It 'does not pass optional parameters that were not supplied' {
+        $PowerShellVersion = 7
+
+        Get-CimOrWmiInstance Win32_OperatingSystem | Out-Null
+
+        Should -Invoke Get-CimInstance -Times 1 -Exactly -ParameterFilter {
+            -not ($PSBoundParameters.ContainsKey('Namespace') -or $PSBoundParameters.ContainsKey('Filter') -or $PSBoundParameters.ContainsKey('Property'))
+        }
+    }
+
+    It 'turns query errors into terminating errors when called with -ErrorAction Stop' {
+        $PowerShellVersion = 7
+        Mock Get-CimInstance { Write-Error 'Invalid namespace' }
+
+        { Get-CimOrWmiInstance SMS_Client -Namespace 'root\ccm' -ErrorAction Stop } | Should -Throw '*Invalid namespace*'
+        { Get-CimOrWmiInstance SMS_Client -Namespace 'root\ccm' -ErrorAction SilentlyContinue } | Should -Not -Throw
     }
 }

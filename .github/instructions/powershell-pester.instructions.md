@@ -6,8 +6,8 @@ description: 'Pester regression testing standards for ConfigMgrClientHealth'
 # ConfigMgr Client Health Pester Standards
 
 Follow [repository guidance](../copilot-instructions.md) and
-[PowerShell conventions](powershell.instructions.md). The filename is retained for existing
-links; use the Pester version configured in [CI](../workflows/workspace-tests.yml).
+[PowerShell conventions](powershell.instructions.md). Use the Pester version configured in
+[CI](../workflows/workspace-tests.yml).
 
 ## Structure and isolation
 

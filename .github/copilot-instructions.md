@@ -1,84 +1,89 @@
 # ConfigMgrClientHealth repository guidance
 
-This repository implements a Windows-only remediation workflow for Configuration Manager client health. The authoritative code path is [ConfigMgrClientHealth.ps1](../ConfigMgrClientHealth.ps1), and the runtime contract is driven by [config.xml](../config.xml).
+This is the single source of repository guidance for AI assistants. [CLAUDE.md](../CLAUDE.md) imports it, and [AGENTS.md](AGENTS.md) only lists files. PowerShell and Pester style rules are in [instructions/](instructions/).
 
-## Repository objective
+## What this is
 
-Keep end-user devices compliant with Configuration Manager client health expectations by automatically checking for and correcting common client-side issues. The script intentionally runs as a local operational tool, not as a generic cross-platform automation framework.
+A single-script, Windows-only tool that checks and repairs Configuration Manager (SCCM/MEMCM) client health on the local endpoint. It runs elevated (local admin, ideally SYSTEM). It is not a module and has no build step.
 
-## Key runtime model
+- [ConfigMgrClientHealth.ps1](../ConfigMgrClientHealth.ps1): the whole implementation
+- [config.xml](../config.xml): sample runtime config; this is the behavior contract
+- [CreateDatabase.sql](../CreateDatabase.sql): `ClientHealth` SQL schema that the log object is written to
+- [Download/](../Download/): packaged release and webservice artifacts; don't edit them
 
-- The tool is executed from a PowerShell session on the managed Windows endpoint.
-- It is designed to run with local administrator privileges and is recommended to run under the SYSTEM context for unattended remediation.
-- It reads XML-defined policy, checks local system state, and then applies remediation when enabled.
-- It can write structured results to local file logs, SQL, and a webservice endpoint.
+## Safety
 
-## Preferred coding patterns
+**Never run `ConfigMgrClientHealth.ps1` itself, or dot-source it, as a validation or test step.** It really remediates the machine (services, WMI, registry, client reinstall) and has no dry-run or Apply switch. `SupportsShouldProcess` does not make every operation preview-safe. Manual runs belong only in an explicitly authorized non-production environment. Don't claim live CM, SQL, or webservice validation unless you actually ran it.
 
-- Prefer explicit parameter validation and plain PowerShell objects over indirect or hidden state.
-- Keep functions small and focused on a single validation or remediation action.
-- Use `Write-Verbose` for execution diagnostics; avoid `Write-Host` for structured data output.
-- Preserve compatibility with the existing XML configuration contract unless a deliberate change is part of a broader repo revision.
-- Use `SupportsShouldProcess` semantics where the script already expects preview-safe execution patterns.
+## Commands
 
-## PowerShell conventions
+Tests use the Pester version pinned in [workspace-tests.yml](workflows/workspace-tests.yml) (currently 6.2.0). CI runs `pwsh` on `windows-latest`.
 
-- Prefer full cmdlet names over aliases.
-- Keep the script self-contained; do not introduce workspace-wide shared modules unless the repo is intentionally refactored.
-- Match the established style of the existing script and avoid gratuitous rewrites.
-- Preserve object property names and XML element names when changing implementation because downstream SQL and logging code depend on them.
+```powershell
+# Install the pinned Pester version
+Install-Module -Name Pester -RequiredVersion 6.2.0 -Force -Scope CurrentUser
 
-## Error handling and logging standards
+# Run all tests from the repo root
+Invoke-Pester -Path ./Tests -Output Detailed
 
-- Fail gracefully with actionable messages when XML, share, or SQL access is invalid.
-- Log operational outcomes with the repo's CMTrace-style format rather than ad hoc console output.
-- Do not emit secrets, credentials, or private network details in logs.
-- Treat missing file share access or SQL connectivity as environment/configuration problems, not as success conditions.
+# Run a single Describe/It by name
+$c = New-PesterConfiguration; $c.Run.Path = './Tests'; $c.Filter.FullName = '*Get-OperatingSystem*'; $c.Output.Verbosity = 'Detailed'; Invoke-Pester -Configuration $c
 
-## Security requirements
+# Check that the script parses
+$e = $null; [System.Management.Automation.Language.Parser]::ParseFile("$PWD\ConfigMgrClientHealth.ps1", [ref]$null, [ref]$e) | Out-Null; $e
 
-- Only run on approved Windows endpoints and approved configuration packages.
-- Protect configuration, log paths, and source share access to the least privilege necessary.
-- Do not commit production hostnames, user names, or share paths into documentation examples.
-- Do not add undocumented credential flows or silent authentication logic.
+# Check that the XML is well formed
+[xml](Get-Content ./config.xml -Raw) | Out-Null
+```
 
-## Documentation requirements
+Report the PowerShell and Pester versions and the pass/fail counts you actually got.
 
-- Keep [README.md](../README.md) aligned with implementation, not stale release notes.
-- Update repository docs when configuration elements, log behavior, or remediation steps change.
-- Link to authoritative local files instead of copying environment-specific operational guidance across docs.
+## Script architecture
 
-## Testing and validation
+The script is one `[CmdletBinding()]` script with `Begin` / `Process` / `End` blocks:
 
-The checked-in [Pester suite](../Tests/ConfigMgrClientHealth.Tests.ps1) runs through [CI](workflows/workspace-tests.yml). From the repository root, run `Invoke-Pester -Path ./Tests -Output Detailed` with the Pester version configured by that workflow. Record the actual runtime version and results. Additional validation should include:
+- **Begin**: sets `$Version`, `$PowerShellVersion`, and `$global:ScriptPath`. If neither `-Config` nor `-Webservice` is passed, it defaults `$Config` to `Config.xml` next to the script. It validates and loads the XML into `$Xml`, then defines about 150 functions *inside the Begin block*. These functions share script-level state implicitly (`$Xml`, `$config`, `$PowerShellVersion`, `$global:ScriptPath`) rather than taking it as parameters.
+- **Process**: runs the health checks in order: admin check, task-sequence check (exits 2), WMI, compliance-state refresh, client install/version, services, site code, cache, log size, provisioning mode, certificate, HW inventory, metering, DNS, BITS, and so on. Most checks run only when their `config.xml` toggle is on. Each `Test-*` function records its result on a shared `$Log` object from `New-LogObject` and may set flags such as `$reinstall` / `$restartCCMExec` that later steps act on.
+- **End**: writes `LastRun` to `HKLM:\Software\ConfigMgrClientHealth`, then writes `$Log` to the local log file, the share log file, SQL (`Update-SQL`, only when `-Webservice` is not given), or the webservice (`Update-Webservice`).
 
-- PowerShell parse validation for [ConfigMgrClientHealth.ps1](../ConfigMgrClientHealth.ps1)
-- XML validation for [config.xml](../config.xml)
-- Manual execution only in an explicitly authorized non-production environment
-- Review of log and SQL output when the relevant features are enabled
+Key function families:
 
-Unit tests must load isolated functions and mock external effects; never execute or dot-source the full remediation entry point for test setup. The script has no Apply switch, and SupportsShouldProcess does not establish that every operation is preview-safe. Preserve XML-controlled remediation defaults. Do not claim live CM, SQL, or webservice validation without actually running it.
+- `Get-XMLConfig*`: thin accessors over `$Xml`, usually one per element or attribute. Many fall back to a default (for example, the share defaults to `$global:ScriptPath`).
+- `Test-*` / `Repair-*` / `Resolve-Client`: detection and remediation.
+- `Out-LogFile`: CMTrace-format logging. Use it and `Write-Verbose` rather than `Write-Host`.
+- `Get-CimOrWmiInstance`: queries a WMI class with `Get-CimInstance` on PowerShell 6+ or `Get-WmiObject` on Windows PowerShell. Use it for new class queries instead of another `if ($PowerShellVersion -ge 6)` pair.
 
-## Pull request expectations
+**Coupled contracts:** `$Log` property names map to columns in `CreateDatabase.sql` and to the webservice payload. XML element and attribute names map to the `Get-XMLConfig*` getters. When you rename or add one, update every place it appears, or keep existing names unchanged.
 
-- Keep pull requests scoped to the repo and the documented issue.
-- Include the rationale for config or behavior changes.
-- Note any unvalidated or environment-specific behavior in the PR description.
-- Preserve compatibility with the current XML-driven architecture and SQL schema.
+## Test architecture
 
-## Prohibited practices
+[Tests/ConfigMgrClientHealth.Tests.ps1](../Tests/ConfigMgrClientHealth.Tests.ps1) never dot-sources the script. Each test extracts individual functions with a regex and `Invoke-Expression`s them:
 
-- Do not hard-code server names or share paths into default example files.
-- Do not replace the XML-driven config contract with undocumented defaults.
-- Do not claim support for platforms or workflows the repo does not implement.
-- Do not write secrets to the log or configuration files.
-- Do not invent shared modules or helpers that are absent from this repository.
+```powershell
+$pattern = "(?ms)^\s*Function\s+$([regex]::Escape($name))\s*\{.*?^\s*\}\s*(?=^\s*Function\s+|\z)"
+```
 
-## Scope for agent work
+Tests set the implicit state the function expects (`$script:Xml`, `$script:config`, `$global:ScriptPath`, `$PowerShellVersion`) and `Mock` every external effect (CIM/WMI, services, registry, `Test-Path`, `Invoke-RestMethod`, SQL). Extract or mock any other script function the code calls. Tests must not depend on the host OS.
 
-- Prefer targeted changes in [ConfigMgrClientHealth.ps1](../ConfigMgrClientHealth.ps1), [config.xml](../config.xml), [CreateDatabase.sql](../CreateDatabase.sql), and repository docs.
-- Preserve local file, SQL, and webservice behavior unless the task explicitly requires modifying that contract.
-- Keep operational changes aligned with the established Configuration Manager client remediation model.
+Because the regex keys on a line starting `Function Name {` and ends at the closing brace followed by the next `Function`, keep that layout. Put a function's comments inside its body, not between functions.
 
-This guidance is intentionally local to this repository so a standalone checkout remains usable without workspace-wide assumptions.
+## Coding rules
 
+- Keep the XML-driven config contract; don't replace config values with hidden defaults.
+- Keep the script self-contained. Local helper functions are fine; don't add shared modules or reference helpers that don't exist here.
+- Match the existing style, use full cmdlet names, and avoid rewriting code that doesn't need to change.
+- Preserve `$Log` property names, XML element names, and local file, SQL, and webservice behavior unless the task is to change that contract.
+- Treat missing share access or SQL connectivity as configuration problems, not success.
+
+## Security
+
+- Don't add real hostnames, users, or share paths to examples, docs, or default config. Use placeholders.
+- Don't log secrets or write them to configuration files.
+- Don't add credential or silent-auth flows. SQL uses integrated auth.
+- Don't claim support for platforms or workflows the repo doesn't implement.
+
+## Documentation and pull requests
+
+- Keep [README.md](../README.md) in sync when config elements, logging, or remediation behavior change.
+- Link to authoritative files instead of copying guidance between docs.
+- Keep pull requests scoped to this repository. Explain the reason for config or behavior changes, and list anything not validated or specific to an environment.
