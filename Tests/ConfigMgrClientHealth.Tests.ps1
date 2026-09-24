@@ -728,6 +728,44 @@ Describe 'Wait-InstallationProcess' {
     }
 }
 
+Describe 'Test-CCMCertificateError' {
+    BeforeAll {
+        $sourceContent = Get-Content -Path $script:SourceFile -Raw
+        $pattern = '(?ms)^\s*Function\s+Test-CCMCertificateError\s*\{.*?^\s*\}\s*(?=^\s*Function\s+|\z)'
+        $functionMatch = [regex]::Match($sourceContent, $pattern)
+        if (-not $functionMatch.Success) {
+            throw 'Unable to extract Test-CCMCertificateError from ConfigMgrClientHealth.ps1'
+        }
+        $script:CertificateSource = $functionMatch.Value
+
+        function Get-CCMLogDirectory { 'C:\Windows\CCM\Logs' }
+        function Write-HostAndLog { param($Text, $ForegroundColor, $Severity) }
+    }
+
+    BeforeEach {
+        Invoke-Expression $script:CertificateSource
+        Mock Get-Content { 'Failed to find the certificate in the store'; 'Other line' }
+        Mock Stop-Service {}
+        Mock Start-Service {}
+        Mock Remove-Item {}
+        Mock Out-File {}
+        Mock Write-Warning {}
+    }
+
+    It 'removes the error line from ClientIDManagerStartup.log so the next run does not repeat the fix' {
+        $log = [pscustomobject]@{ ClientCertificate = $null }
+
+        Test-CCMCertificateError -Log $log
+
+        Should -Invoke Out-File -Times 1 -Exactly -ParameterFilter {
+            $FilePath -eq 'C:\Windows\CCM\Logs\ClientIDManagerStartup.log' -and ($InputObject -join "`n") -notmatch 'Failed to find the certificate'
+        }
+        Should -Invoke Remove-Item -Times 1 -Exactly
+        Should -Invoke Start-Service -Times 1 -Exactly
+        $log.ClientCertificate | Should -Be 'Failed to find the certificate in the store'
+    }
+}
+
 Describe 'Function layout' {
     It 'declares every function so the test extractor can find it' {
         $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:SourceFile, [ref]$null, [ref]$null)

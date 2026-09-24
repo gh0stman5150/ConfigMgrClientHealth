@@ -675,7 +675,7 @@ Begin {
             Remove-Item -Path $cert -Force -ErrorAction SilentlyContinue | Out-Null
             # Remove the error from the logfile to avoid double remediations based on false positives
             $newContent = $content | Select-String -pattern $Error1 -notmatch
-            Out-File -FilePath $logfile -InputObject $newContent -Encoding utf8 -Force
+            Out-File -FilePath $logFile1 -InputObject $newContent -Encoding utf8 -Force
             Start-Service -Name ccmexec
 
             # Update log object
