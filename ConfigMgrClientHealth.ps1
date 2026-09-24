@@ -4,7 +4,7 @@
 .EXAMPLE
    .\ConfigMgrClientHealth.ps1 -Config .\Config.Xml
 .EXAMPLE
-    \\cm01.rodland.lab\ClientHealth$\ConfigMgrClientHealth.ps1 -Config \\cm01.rodland.lab\ClientHealth$\Config.Xml -Webservice https://cm01.rodland.lab/ConfigMgrClientHealth
+    \\cm01.contoso.com\ClientHealth$\ConfigMgrClientHealth.ps1 -Config \\cm01.contoso.com\ClientHealth$\Config.Xml -Webservice https://cm01.contoso.com/ConfigMgrClientHealth
 .PARAMETER Config
     A single parameter specifying the path to the configuration XML file.
 .PARAMETER Webservice
