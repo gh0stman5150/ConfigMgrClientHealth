@@ -1145,12 +1145,24 @@ Describe 'PowerShell 7 compatibility' {
             Should -Invoke Start-RebootApplication -Times 0 -Exactly
         }
 
-        It 'warns when the last boot is older than MaxRebootDays on PowerShell 7' {
+        It 'starts the reboot application when the last boot is older than MaxRebootDays on PowerShell 7' {
             $script:BootTime = (Get-Date).AddDays(-30)
 
             Get-LastReboot -Xml $script:Xml -WarningVariable warnings -WarningAction SilentlyContinue | Out-Null
 
-            $warnings | Should -BeLike '*More than 7 days since last reboot*'
+            $warnings | Should -BeLike '*More than 7 days since last reboot. Starting reboot application.'
+            Should -Invoke Start-RebootApplication -Times 1 -Exactly
+        }
+
+        It 'does not start the reboot application when the RebootApplication getter returns <Value>' -ForEach @(@{ Value = 'False' }, @{ Value = $null }) {
+            $script:BootTime = (Get-Date).AddDays(-30)
+            $script:RebootEnable = $Value
+            Mock Get-XMLConfigRebootApplicationEnable { $script:RebootEnable }
+
+            Get-LastReboot -Xml $script:Xml -WarningVariable warnings -WarningAction SilentlyContinue | Out-Null
+
+            $warnings | Should -BeLike '*More than 7 days since last reboot. Reboot application disabled.'
+            Should -Invoke Start-RebootApplication -Times 0 -Exactly
         }
     }
 

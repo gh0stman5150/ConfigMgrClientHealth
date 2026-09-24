@@ -2146,7 +2146,7 @@ Begin {
                 $text = 'Last boot time: ' +$lastBootTime + ': OK'
                 Write-Output $text
             }
-            elseif (($uptime.TotalDays -ge $maxRebootDays) -and (Get-XMLConfigRebootApplicationEnable -eq $true)) {
+            elseif (($uptime.TotalDays -ge $maxRebootDays) -and ((Get-XMLConfigRebootApplicationEnable) -like 'True')) {
                 $text = 'Last boot time: ' +$lastBootTime + ': More than '+$maxRebootDays +' days since last reboot. Starting reboot application.'
                 Write-Warning $text
                 Start-RebootApplication
