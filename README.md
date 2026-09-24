@@ -136,7 +136,7 @@ Use the following checks when the script does not behave as expected:
 
 The script writes log output using a CMTrace-style format and can fall back to a local `C:\ClientHealth` path depending on configuration.
 
-Remediation status messages shown on the console (for example "ConfigMgr Client database corrupt. Reinstalling..." or "SMSTSMgr: OK") are also written to the log files as they happen, so unattended runs keep them:
+Status messages shown on the console, including each check's result and any remediation (for example "DNS Check: OK", "Service BITS running: OK" or "ConfigMgr Client database corrupt. Reinstalling..."), are also written to the log files as they happen, so unattended runs keep them:
 
 - to the local `ClientHealth.log` when `LocalLogFile="True"`
 - to the share log when the `File` log is enabled and `Level="Full"`

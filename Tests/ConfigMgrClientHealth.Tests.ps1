@@ -129,6 +129,7 @@ Describe 'Repair-WMI' {
         }
 
         Invoke-Expression $functionMatch.Value
+        function Write-HostAndLog { param($Text, $ForegroundColor, $Severity) }
 
         $script:WmiStopCalls = 0
         $script:WmiStartCalls = 0
@@ -190,6 +191,7 @@ Describe 'Repair-WMI logging' {
         }
 
         Invoke-Expression $functionMatch.Value
+        function Write-HostAndLog { param($Text, $ForegroundColor, $Severity) }
 
         $script:WarningMessages = @()
         Mock Get-OperatingSystem { 'Windows 11 64-Bit' }
@@ -496,6 +498,7 @@ Describe 'Test-Service' {
         function Get-OperatingSystem {}
         function Get-ServiceUpTime { param($Name) }
         function sc.exe {}
+        function Write-HostAndLog { param($Text, $ForegroundColor, $Severity) }
         function cmd {}
 
         function New-ServiceLog { [pscustomobject]@{ Services = 'OK' } }
@@ -524,6 +527,8 @@ Describe 'Test-Service' {
         Mock Stop-Process {}
         Mock Get-Process {}
         Mock Start-Sleep {}
+        $script:Messages = [System.Collections.Generic.List[string]]::new()
+        Mock Write-HostAndLog { $script:Messages.Add($Text) }
         Mock sc.exe { $script:NativeArgs = @($args) }
         Mock cmd { $script:NativeArgs = @($args) }
     }
@@ -533,7 +538,8 @@ Describe 'Test-Service' {
 
         $output = Test-Service -Name 'TestSvc01' -StartupType 'Automatic' -State 'Running' -Log $log
 
-        $output | Should -Be @('Service TestSvc01 startup: OK', 'Service TestSvc01 running: OK')
+        $output | Should -BeNullOrEmpty
+        $script:Messages | Should -Be @('Service TestSvc01 startup: OK', 'Service TestSvc01 running: OK')
         $log.Services | Should -Be 'OK'
         Should -Invoke Set-Service -Times 0 -Exactly
         Should -Invoke Start-Service -Times 0 -Exactly
@@ -551,9 +557,9 @@ Describe 'Test-Service' {
     It 'sets a different configured startup type with Set-Service' {
         $log = New-ServiceLog
 
-        $output = Test-Service -Name 'TestSvc01' -StartupType 'Manual' -State 'Running' -Log $log
+        Test-Service -Name 'TestSvc01' -StartupType 'Manual' -State 'Running' -Log $log
 
-        $output | Should -Contain 'Configuring service TestSvc01 StartupType to: Manual...'
+        $script:Messages | Should -Contain 'Configuring service TestSvc01 StartupType to: Manual...'
         Should -Invoke Set-Service -Times 1 -Exactly -ParameterFilter { $Name -eq 'TestSvc01' -and $StartupType -eq 'Manual' }
         $log.Services | Should -Be 'Started'
     }
@@ -561,9 +567,9 @@ Describe 'Test-Service' {
     It 'uses sc.exe for delayed start when the service is automatic without the delay flag' {
         $log = New-ServiceLog
 
-        $output = Test-Service -Name 'TestSvc01' -StartupType 'automaticd' -State 'Running' -Log $log
+        Test-Service -Name 'TestSvc01' -StartupType 'automaticd' -State 'Running' -Log $log
 
-        $output | Should -Contain 'Configuring service TestSvc01 StartupType to: Automatic (Delayed Start)...'
+        $script:Messages | Should -Contain 'Configuring service TestSvc01 StartupType to: Automatic (Delayed Start)...'
         Should -Invoke sc.exe -Times 1 -Exactly
         # The script passes the Get-Service object, which PowerShell converts to the service name for native commands.
         $script:NativeArgs[0] | Should -Be 'config'
@@ -576,9 +582,9 @@ Describe 'Test-Service' {
     It 'treats a delayed-start service with the delay flag as OK' {
         $script:DelayedAutostart = 1
 
-        $output = Test-Service -Name 'TestSvc01' -StartupType 'Automatic (Delayed Start)' -State 'Running' -Log (New-ServiceLog)
+        Test-Service -Name 'TestSvc01' -StartupType 'Automatic (Delayed Start)' -State 'Running' -Log (New-ServiceLog)
 
-        $output | Should -Contain 'Service TestSvc01 startup: OK'
+        $script:Messages | Should -Contain 'Service TestSvc01 startup: OK'
         Should -Invoke sc.exe -Times 0 -Exactly
     }
 
@@ -587,9 +593,9 @@ Describe 'Test-Service' {
         $script:WmiStartMode = 'Manual'
         $log = New-ServiceLog
 
-        $output = Test-Service -Name 'wuauserv' -StartupType 'automaticd' -State 'Running' -Log $log
+        Test-Service -Name 'wuauserv' -StartupType 'automaticd' -State 'Running' -Log $log
 
-        $output | Should -Contain 'Configuring service wuauserv StartupType to: Automatic (Trigger Start)...'
+        $script:Messages | Should -Contain 'Configuring service wuauserv StartupType to: Automatic (Trigger Start)...'
         Should -Invoke Set-Service -Times 1 -Exactly -ParameterFilter { $Name -eq 'wuauserv' -and $StartupType -eq 'Automatic' }
         Should -Invoke sc.exe -Times 0 -Exactly
         $log.Services | Should -Be 'OK'
@@ -599,9 +605,9 @@ Describe 'Test-Service' {
         $script:ServiceStatus = 'Stopped'
         $log = New-ServiceLog
 
-        $output = Test-Service -Name 'TestSvc01' -StartupType 'Automatic' -State 'Running' -Log $log
+        Test-Service -Name 'TestSvc01' -StartupType 'Automatic' -State 'Running' -Log $log
 
-        $output | Should -Contain 'Starting service: TestSvc01...'
+        $script:Messages | Should -Contain 'Starting service: TestSvc01...'
         Should -Invoke Start-Service -Times 1 -Exactly -ParameterFilter { $Name -eq 'TestSvc01' }
         Should -Invoke Stop-Process -Times 0 -Exactly
         $log.Services | Should -Be 'Started'
@@ -631,9 +637,9 @@ Describe 'Test-Service' {
         }
         $log = New-ServiceLog
 
-        $output = Test-Service -Name 'TestSvc01' -StartupType 'Automatic' -State 'Running' -Log $log
+        Test-Service -Name 'TestSvc01' -StartupType 'Automatic' -State 'Running' -Log $log
 
-        $output | Should -Contain "Failed to start service TestSvc01 because it's sharing a thread with another process.  Changing to use its own thread."
+        $script:Messages | Should -Contain "Failed to start service TestSvc01 because it's sharing a thread with another process.  Changing to use its own thread."
         Should -Invoke cmd -Times 1 -Exactly
         $script:NativeArgs | Should -Be @('/c', 'sc', 'config', 'TestSvc01', 'type=', 'own')
         $script:StartAttempts | Should -Be 2
@@ -644,9 +650,9 @@ Describe 'Test-Service' {
         $script:ServiceUptimeDays = 10
         $log = New-ServiceLog
 
-        $output = Test-Service -Name 'TestSvc01' -StartupType 'Automatic' -State 'Running' -Uptime 7 -Log $log
+        Test-Service -Name 'TestSvc01' -StartupType 'Automatic' -State 'Running' -Uptime 7 -Log $log
 
-        $output | Should -Contain 'Restarted service: TestSvc01...'
+        $script:Messages | Should -Contain 'Restarted service: TestSvc01...'
         Should -Invoke Restart-Service -Times 1 -Exactly -ParameterFilter { $Name -eq 'TestSvc01' }
         $log.Services | Should -Be 'Restarted'
     }
@@ -654,9 +660,9 @@ Describe 'Test-Service' {
     It 'reports uptime OK when the service is within the limit' {
         $script:ServiceUptimeDays = 3
 
-        $output = Test-Service -Name 'TestSvc01' -StartupType 'Automatic' -State 'Running' -Uptime 7 -Log (New-ServiceLog)
+        Test-Service -Name 'TestSvc01' -StartupType 'Automatic' -State 'Running' -Uptime 7 -Log (New-ServiceLog)
 
-        $output | Should -Contain 'Service TestSvc01 uptime: OK'
+        $script:Messages | Should -Contain 'Service TestSvc01 uptime: OK'
         Should -Invoke Restart-Service -Times 0 -Exactly
     }
 
@@ -719,6 +725,20 @@ Describe 'Wait-InstallationProcess' {
         Wait-InstallationProcess -Name 'TestSvc01' -WaitMinutes 30 | Should -BeTrue
 
         Should -Invoke Start-Sleep -Times 1 -Exactly -ParameterFilter { $Seconds -eq 30 }
+    }
+}
+
+Describe 'Console output' {
+    It 'only calls Write-Host from Write-HostAndLog, so status messages also reach the logs' {
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:SourceFile, [ref]$null, [ref]$null)
+        $callers = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] -and $args[0].GetCommandName() -eq 'Write-Host' }, $true) |
+            ForEach-Object {
+                $node = $_
+                while ($node -and $node -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) { $node = $node.Parent }
+                if ($node) { $node.Name } else { "script line $($_.Extent.StartLineNumber)" }
+            } | Sort-Object -Unique
+
+        $callers | Should -Be 'Write-HostAndLog'
     }
 }
 
@@ -833,6 +853,7 @@ Describe 'WMI query functions' {
         function Get-XMLConfigOSDiskFreeSpace {}
         function Get-XMLConfigLoggingLevel {}
         function Out-LogFile { param($Xml, $Text, $Severity) }
+        function Write-HostAndLog { param($Text, $ForegroundColor, $Severity) }
 
         # Fake WMI data. The mock honours a WQL -Filter of the form "Name='x' OR Name='y'" so the
         # same test passes whether the function filters in the query or with Where-Object afterwards.
@@ -872,6 +893,8 @@ Describe 'WMI query functions' {
         Mock Get-XMLConfigOSDiskFreeSpace { 10 }
         Mock Get-XMLConfigLoggingLevel { 'Full' }
         Mock Out-LogFile {}
+        $script:Messages = [System.Collections.Generic.List[string]]::new()
+        Mock Write-HostAndLog { $script:Messages.Add($Text) }
         Mock Stop-Service {}
         Mock Start-Service {}
     }
@@ -890,7 +913,9 @@ Describe 'WMI query functions' {
 
     Context 'Test-DiskSpace' {
         It 'reports OK when free space is above the configured minimum' {
-            Test-DiskSpace | Should -Be 'Free space C: OK'
+            Test-DiskSpace | Should -BeNullOrEmpty
+
+            $script:Messages | Should -Be 'Free space C: OK'
         }
 
         It 'writes an error when free space is at or below the configured minimum' {
@@ -906,9 +931,9 @@ Describe 'WMI query functions' {
             $PowerShellVersion = $Version
             $log = [pscustomobject]@{ AdminShare = $null }
 
-            $output = Test-AdminShare -Log $log
+            Test-AdminShare -Log $log
 
-            $output | Should -Be @('Adminshare Admin$: OK', 'Adminshare C$: OK')
+            $script:Messages | Should -Be @('Adminshare Admin$: OK', 'Adminshare C$: OK')
             $log.AdminShare | Should -Be 'OK'
             Should -Invoke Stop-Service -Times 0 -Exactly
         }
@@ -950,7 +975,9 @@ Describe 'WMI query functions' {
             )
             $log = [pscustomobject]@{ Drivers = $null }
 
-            Test-MissingDrivers -Log $log | Should -Be 'Drivers: OK'
+            Test-MissingDrivers -Log $log
+
+            $script:Messages | Should -Be 'Drivers: OK'
             $log.Drivers | Should -Be 'OK'
         }
 
@@ -1139,9 +1166,9 @@ Describe 'PowerShell 7 compatibility' {
         It 'reports a recent boot as OK on PowerShell <Version>' -ForEach @(@{ Version = 7 }, @{ Version = 5 }) {
             $PowerShellVersion = $Version
 
-            $result = Get-LastReboot -Xml $script:Xml
+            Get-LastReboot -Xml $script:Xml | Should -BeNullOrEmpty
 
-            $result | Should -BeLike 'Last boot time: *: OK'
+            Should -Invoke Write-HostAndLog -Times 1 -Exactly -ParameterFilter { $Text -like 'Last boot time: *: OK' }
             Should -Invoke Start-RebootApplication -Times 0 -Exactly
         }
 
@@ -1196,7 +1223,9 @@ Describe 'PowerShell 7 compatibility' {
             $script:ScanTime = (Get-Date).AddDays(-1)
             $log = [pscustomobject]@{ HWInventory = $null }
 
-            Test-SCCMHardwareInventoryScan -Log $log | Should -Be 'ConfigMgr Hardware Inventory scan: OK'
+            Test-SCCMHardwareInventoryScan -Log $log | Should -BeNullOrEmpty
+
+            Should -Invoke Write-HostAndLog -Times 1 -Exactly -ParameterFilter { $Text -eq 'ConfigMgr Hardware Inventory scan: OK' }
         }
     }
 
@@ -1513,9 +1542,9 @@ Describe 'Test-DNSConfiguration' {
 
         # Get-DNSHostRecord wraps the [System.Net.Dns] lookups, so the tests replace it instead of querying the host's DNS.
         function Get-DNSHostRecord {}
-        function Get-XMLConfigLoggingLevel {}
         function Get-XMLConfigDNSFix {}
         function Out-LogFile { param([xml]$Xml, $Text, $Mode, $Severity) }
+        function Write-HostAndLog { param($Text, $ForegroundColor, $Severity) }
         function Register-DnsClient {}
         function ipconfig {}
     }
@@ -1529,9 +1558,9 @@ Describe 'Test-DNSConfiguration' {
 
         Mock Get-DNSHostRecord { $script:Record }
         Mock Get-CimInstance { [pscustomobject]@{ IPAddress = @('10.0.0.5', 'fe80::1') } }
-        Mock Get-XMLConfigLoggingLevel { 'Full' }
         Mock Get-XMLConfigDNSFix { $script:DnsFix }
         Mock Out-LogFile {}
+        Mock Write-HostAndLog {}
         Mock Register-DnsClient {}
         Mock ipconfig {}
         Mock Write-Host {}
@@ -1540,9 +1569,9 @@ Describe 'Test-DNSConfiguration' {
     It 'reports OK when DNS publishes only local IP addresses' {
         $log = [pscustomobject]@{ DNS = $null }
 
-        $output = Test-DNSConfiguration -Log $log
+        Test-DNSConfiguration -Log $log | Should -BeNullOrEmpty
 
-        $output | Should -Be 'DNS Check: OK'
+        Should -Invoke Write-HostAndLog -Times 1 -Exactly -ParameterFilter { $Text -eq 'DNS Check: OK' -and -not $Severity }
         $log.DNS | Should -Be 'OK'
         Should -Invoke Register-DnsClient -Times 0 -Exactly
         Should -Invoke Get-CimInstance -Times 1 -Exactly -ParameterFilter {
@@ -1558,8 +1587,26 @@ Describe 'Test-DNSConfiguration' {
 
         $log.DNS | Should -Be '10.0.0.9 '
         Should -Invoke Register-DnsClient -Times 1 -Exactly
-        Should -Invoke Out-LogFile -Times 1 -Exactly -ParameterFilter { $Text -like '*Trying to resolve by registerting with DNS server' -and $Severity -eq 2 }
-        Should -Invoke Out-LogFile -Times 1 -Exactly -ParameterFilter { $Text -eq "IP '10.0.0.9' in DNS record do not exist locally`n" -and $Severity -eq 2 }
+        Should -Invoke Write-HostAndLog -Times 1 -Exactly -ParameterFilter { $Text -like '*Trying to resolve by registerting with DNS server' -and $Severity -eq 2 }
+        Should -Invoke Write-HostAndLog -Times 1 -Exactly -ParameterFilter { $Text -eq "IP '10.0.0.9' in DNS record do not exist locally" -and $Severity -eq 2 }
+    }
+
+    It 'leaves the log files to Write-HostAndLog instead of writing the share log directly' {
+        $script:Record.AddressList = @('10.0.0.9')
+
+        Test-DNSConfiguration -Log ([pscustomobject]@{ DNS = $null })
+
+        Should -Invoke Out-LogFile -Times 0 -Exactly
+        Should -Invoke Write-Host -Times 0 -Exactly
+    }
+
+    It 'reports the DNS host name and addresses when DNS returns another host name' {
+        $script:Record.HostName = 'pc02.contoso.com'
+
+        Test-DNSConfiguration -Log ([pscustomobject]@{ DNS = $null })
+
+        Should -Invoke Write-HostAndLog -Times 1 -Exactly -ParameterFilter { $Text -eq 'DNS name: pc02.contoso.com local fqdn: pc01.contoso.com DNS IPs: 10.0.0.5 Local IPs: 10.0.0.5 fe80::1' -and $Severity -eq 2 }
+        Should -Invoke Register-DnsClient -Times 1 -Exactly
     }
 
     It 'uses ipconfig to re-register on PowerShell 3' {
@@ -1581,7 +1628,8 @@ Describe 'Test-DNSConfiguration' {
 
         $log.DNS | Should -Be '10.0.0.9 '
         Should -Invoke Register-DnsClient -Times 0 -Exactly
-        Should -Invoke Out-LogFile -Times 1 -Exactly -ParameterFilter { $Text -like '*Monitor mode only, no remediation' }
+        Should -Invoke Write-HostAndLog -Times 1 -Exactly -ParameterFilter { $Text -like '*Monitor mode only, no remediation' -and $Severity -eq 2 }
+        Should -Invoke Write-HostAndLog -Times 1 -Exactly -ParameterFilter { $Text -eq "IP '10.0.0.9' in DNS record do not exist locally" }
     }
 
     It 'fails the check when DNS returns another host name' {

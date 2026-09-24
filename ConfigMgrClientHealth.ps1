@@ -691,7 +691,7 @@ Begin {
 
         if ($ok -eq $true) {
             $text = 'ConfigMgr Client Certificate: OK'
-            Write-Output $text
+            Write-HostAndLog -Text $text
             $log.ClientCertificate = 'OK'
         }
     }
@@ -979,7 +979,6 @@ Begin {
         else {
             $dnsFail = 'DNS name: ' + $Record.HostName + ' local fqdn: ' + $Record.Fqdn + ' DNS IPs: ' + $Record.AddressList + ' Local IPs: ' + $LocalIPs
             $match = $false
-            Write-Host $dnsFail
         }
 
         [pscustomobject]@{ Match = $match; DnsFail = $dnsFail; LogFail = $logFail }
@@ -996,36 +995,21 @@ Begin {
         Param([Parameter(Mandatory=$true)]$Log)
         $localIPs = Get-CimOrWmiInstance Win32_NetworkAdapterConfiguration -Filter "IPEnabled=True" -Property IPAddress | Select-Object -ExpandProperty IPAddress
         $result = Compare-DNSRecord -Record (Get-DNSHostRecord) -LocalIPs $localIPs
-        $dnsFail = $result.DnsFail
-        $logFail = $result.LogFail
 
-        $FileLogLevel = ((Get-XMLConfigLoggingLevel).ToString()).ToLower()
-
-        switch ($result.Match) {
-            $false {
-                if ((Get-XMLConfigDNSFix) -like 'True') {
-                    $text = 'DNS Check: FAILED. IP address published in DNS do not match IP address on local machine. Trying to resolve by registerting with DNS server'
-                    Repair-DNSRegistration
-                    Write-Host $text
-                    $log.DNS = $logFail
-                    if (-NOT($FileLogLevel -like "clientlocal")) {
-                        Out-LogFile -Xml $xml -Text $text -Severity 2
-                        Out-LogFile -Xml $xml -Text $dnsFail -Severity 2
-                    }
-
-                }
-                else {
-                    $text = 'DNS Check: FAILED. IP address published in DNS do not match IP address on local machine. Monitor mode only, no remediation'
-                    $log.DNS = $logFail
-                    if (-NOT($FileLogLevel -like "clientlocal")) { Out-LogFile -Xml $xml -Text $text  -Severity 2}
-                    Write-Host $text
-                }
-
+        if ($result.Match -eq $true) {
+            Write-HostAndLog -Text 'DNS Check: OK'
+            $log.DNS = 'OK'
+        }
+        else {
+            $log.DNS = $result.LogFail
+            if ((Get-XMLConfigDNSFix) -like 'True') {
+                Write-HostAndLog -Text 'DNS Check: FAILED. IP address published in DNS do not match IP address on local machine. Trying to resolve by registerting with DNS server' -Severity 2
+                Write-HostAndLog -Text $result.DnsFail.TrimEnd() -Severity 2
+                Repair-DNSRegistration
             }
-            $true {
-                $text = 'DNS Check: OK'
-                Write-Output $text
-                $log.DNS = 'OK'
+            else {
+                Write-HostAndLog -Text 'DNS Check: FAILED. IP address published in DNS do not match IP address on local machine. Monitor mode only, no remediation' -Severity 2
+                Write-HostAndLog -Text $result.DnsFail.TrimEnd() -Severity 2
             }
         }
     }
@@ -1062,7 +1046,7 @@ Begin {
 
             if (($count -eq 0) -or ($count -eq $null)) {
                 $text = 'Updates: No mandatory updates to install.'
-                Write-Output $text
+                Write-HostAndLog -Text $text
                 $log.Updates = 'OK'
             }
             else {
@@ -1073,7 +1057,7 @@ Begin {
                     $kb = $hotfix -replace $regex -replace "\." -replace "-"
                     if ($installedUpdates -contains $kb) {
                         $text = "Update $hotfix" + ": OK"
-                        Write-Output $text
+                        Write-HostAndLog -Text $text
                     }
                     else {
                         if ($null -eq $logEntry) { $logEntry = $kb }
@@ -1277,7 +1261,7 @@ Begin {
 
         if ($installedVersion -ge $ClientVersion) {
             $text = 'ConfigMgr Client version is: ' +$installedVersion + ': OK'
-            Write-Output $text
+            Write-HostAndLog -Text $text
             $obj = $false
         }
         elseif ($ClientAutoUpgrade -like 'true') {
@@ -1287,7 +1271,7 @@ Begin {
         }
         else {
             $text = 'ConfigMgr Client version is: ' +$installedVersion +': Required version: '+$ClientVersion +' AutoUpgrade: false. Skipping upgrade'
-            Write-Output $text
+            Write-HostAndLog -Text $text
             $obj = $false
         }
         Write-Output $obj
@@ -1362,7 +1346,7 @@ Begin {
             }
             else {
                 $text = 'Pending Reboot: OK'
-                Write-Output $text
+                Write-HostAndLog -Text $text
                 $log.PendingReboot = 'OK'
             }
             #Out-LogFile -Xml $xml -Text $text
@@ -1386,7 +1370,7 @@ Begin {
         }
         else {
             $text = 'ConfigMgr Client Provisioning Mode: OK'
-            Write-Output $text
+            Write-HostAndLog -Text $text
             $log.ProvisioningMode = 'OK'
         }
     }
@@ -1408,7 +1392,7 @@ Begin {
         if ($StateMessage -match 'Successfully forwarded State Messages to the MP') {
             $text = 'StateMessage: OK'
             $log.StateMessages = 'OK'
-            Write-Output $text
+            Write-HostAndLog -Text $text
         }
         else {
             $text = 'StateMessage: ERROR. Remediating...'
@@ -1459,7 +1443,7 @@ Begin {
         #If we need to repart the policy files then do so.
         if ($RepairReason -ne ""){
             $log.WUAHandler = "Broken ($RepairReason)"
-            Write-Output "GPO Cache: Broken ($RepairReason)"
+            Write-HostAndLog -Text "GPO Cache: Broken ($RepairReason)" -Severity 2
             Write-Verbose 'Deleting registry.pol and running gpupdate...'
 
             try { if (Test-Path -Path $MachineRegistryFile) {Remove-Item $MachineRegistryFile -Force } }
@@ -1471,11 +1455,11 @@ Begin {
             Get-SCCMPolicySourceUpdateMessage
 
             $log.WUAHandler = "Repaired ($RepairReason)"
-            Write-Output "GPO Cache: $($log.WUAHandler)"
+            Write-HostAndLog -Text "GPO Cache: $($log.WUAHandler)"
         }
         else {
             $log.WUAHandler = 'OK'
-            Write-Output "GPO Cache: OK"
+            Write-HostAndLog -Text "GPO Cache: OK"
         }
     }
 
@@ -1571,7 +1555,7 @@ Begin {
         if ((Test-Path $ccmSetupPath -ErrorAction SilentlyContinue) -eq $true) {
             if ($FirstInstall -eq $true) { $text = 'Installing Configuration Manager Client.' }
             else { $text = 'Client tagged for reinstall. Reinstalling client...' }
-            Write-Output $text
+            Write-HostAndLog -Text $text
 
             Write-Verbose "Perform a test on a specific registry key required for ccmsetup to succeed."
             Test-CCMSetup1
@@ -1713,7 +1697,7 @@ Begin {
 
     Function Repair-WMI {
         $text ='Repairing WMI'
-        Write-Output $text
+        Write-HostAndLog -Text $text
 
         try {
             $osName = Get-OperatingSystem
@@ -1824,7 +1808,7 @@ Begin {
                 Write-Verbose "Resending compliance states."
                 (New-Object -ComObject Microsoft.CCM.UpdatesStore).RefreshServerComplianceState()
                 $LastSent=Get-Date
-                Write-Output "Compliance States: Refreshed."
+                Write-HostAndLog -Text "Compliance States: Refreshed."
             }
             Catch{
                 Write-Error "Failed to resend the compliance states."
@@ -1832,7 +1816,7 @@ Begin {
             }
         }
         Else{
-            Write-Output "Compliance States: OK."
+            Write-HostAndLog -Text "Compliance States: OK."
         }
 
         Set-RegistryValue -Path $RegistryKey -Name $RegValueName -Value $LastSent
@@ -1909,7 +1893,7 @@ Begin {
         Write-Verbose 'Verify service is running'
         if ($service.Status -eq "Running") {
             $text = 'Service ' +$Name+' running: OK'
-            Write-Output $text
+            Write-HostAndLog -Text $text
 
             #If we are checking uptime.
             If ($Uptime) { Restart-ServiceAfterUptime -Name $Name -Service $service -Uptime $Uptime -Log $log }
@@ -1979,7 +1963,7 @@ Begin {
         if ($CurrentStartupType -eq $StartupType)
         {
             $text = "Service $Name startup: OK"
-            Write-Output $text
+            Write-HostAndLog -Text $text
         }
         elseif ($StartupType -like "Automatic (Delayed Start)") {
             # Handle Automatic Trigger Start the dirty way for these two services. Implement in a nice way in future version.
@@ -1989,13 +1973,13 @@ Begin {
                     Set-Service -Name $service.Name -StartupType Automatic
                 }
                 else { $text = "Service $Name startup: OK" }
-                Write-Output $text
+                Write-HostAndLog -Text $text
             }
             else {
                 # Automatic delayed requires the use of sc.exe
                 & sc.exe config $service start= delayed-auto | Out-Null
                 $text = "Configuring service $Name StartupType to: $StartupType..."
-                Write-Output $text
+                Write-HostAndLog -Text $text
                 $log.Services = 'Started'
             }
         }
@@ -2003,7 +1987,7 @@ Begin {
         else {
             try {
                 $text = "Configuring service $Name StartupType to: $StartupType..."
-                Write-Output $text
+                Write-HostAndLog -Text $text
                 Set-Service -Name $service.Name -StartupType $StartupType
                 $log.Services = 'Started'
             }
@@ -2030,9 +2014,9 @@ Begin {
 
                 #If the processes are not running the restart the service.
                 If ($ProcessesStopped){
-                    Write-Output "Restarting service: $($Name)..."
+                    Write-HostAndLog -Text "Restarting service: $($Name)..."
                     Restart-Service  -Name $service.Name -Force
-                    Write-Output "Restarted service: $($Name)..."
+                    Write-HostAndLog -Text "Restarted service: $($Name)..."
                     $log.Services = 'Restarted'
                 }
             } catch {
@@ -2041,7 +2025,7 @@ Begin {
             }
         }
         else {
-            Write-Output "Service $($Name) uptime: OK"
+            Write-HostAndLog -Text "Service $($Name) uptime: OK"
         }
     }
 
@@ -2091,14 +2075,14 @@ Begin {
         try {
             $RetryService= $False
             $text = 'Starting service: ' + $Name + '...'
-            Write-Output $text
+            Write-HostAndLog -Text $text
             Start-Service -Name $service.Name -ErrorAction Stop
             $log.Services = 'Started'
         } catch {
             #Error 1290 (-2146233087) indicates that the service is sharing a thread with another service that is protected and cannot share its thread.
             #This is resolved by configuring the service to run on its own thread.
             If ($_.Exception.Hresult -eq '-2146233087'){
-                Write-Output "Failed to start service $Name because it's sharing a thread with another process.  Changing to use its own thread."
+                Write-HostAndLog -Text "Failed to start service $Name because it's sharing a thread with another process.  Changing to use its own thread." -Severity 2
                 & cmd /c sc config $Name type= own
                 $RetryService= $True
             }
@@ -2127,13 +2111,13 @@ Begin {
 
         if ($shares.Name -contains 'ADMIN$') {
             $text = 'Adminshare Admin$: OK'
-            Write-Output $text
+            Write-HostAndLog -Text $text
         }
         else { $fix = $true }
 
         if ($shares.Name -contains "C$") {
             $text = 'Adminshare C$: OK'
-            Write-Output $text
+            Write-HostAndLog -Text $text
         }
         else { $fix = $true }
 
@@ -2158,7 +2142,7 @@ Begin {
         }
         else {
             $text ="Free space $env:SystemDrive OK"
-            Write-Output $text
+            Write-HostAndLog -Text $text
         }
     }
 
@@ -2184,7 +2168,7 @@ Begin {
             $uptime = (Get-Date) - $lastBootTime
             if ($uptime.TotalDays -lt $maxRebootDays) {
                 $text = 'Last boot time: ' +$lastBootTime + ': OK'
-                Write-Output $text
+                Write-HostAndLog -Text $text
             }
             elseif (($uptime.TotalDays -ge $maxRebootDays) -and ((Get-XMLConfigRebootApplicationEnable) -like 'True')) {
                 $text = 'Last boot time: ' +$lastBootTime + ': More than '+$maxRebootDays +' days since last reboot. Starting reboot application.'
@@ -2248,7 +2232,7 @@ Begin {
         }
         else {
             $text = "Drivers: OK"
-            Write-Output $text
+            Write-HostAndLog -Text $text
             $log.Drivers = 'OK'
         }
     }
@@ -2290,7 +2274,7 @@ Begin {
         }
         else {
             $text = "ConfigMgr Hardware Inventory scan: OK"
-            Write-Output $text
+            Write-HostAndLog -Text $text
         }
         $log.HWInventory = $HWScanDate
         Write-Verbose "End Test-SCCMHardwareInventoryScan"
@@ -3265,7 +3249,7 @@ Process {
     #Get the last run from the registry, defaulting to the minimum date value if the script has never ran.
     try{[datetime]$LastRun = Get-RegistryValue -Path $RegistryKey -Name $LastRunRegistryValueName}
     catch{$LastRun=[datetime]::MinValue}
-    Write-Output "Script last ran: $($LastRun)"
+    Write-HostAndLog -Text "Script last ran: $($LastRun)"
 
     Write-Verbose "Testing if log files are bigger than max history for logfiles."
     Test-ConfigMgrHealthLogging
@@ -3408,7 +3392,7 @@ Process {
 
     # Restart ConfigMgr client if tagged for restart and no reinstall tag
     if (($restartCCMExec -eq $true) -and ($Reinstall -eq $false)) {
-        Write-Output "Restarting service CcmExec..."
+        Write-HostAndLog -Text "Restarting service CcmExec..."
 
         if ($SCCMLogJobs.Rows.Count -ge 1) {
             Stop-Service -Name CcmExec
@@ -3477,25 +3461,25 @@ End {
     #Set the last run.
     $Date = Get-Date
     Set-RegistryValue -Path $RegistryKey -Name $LastRunRegistryValueName -Value $Date
-    Write-Output "Setting last ran to $($Date)"
+    Write-HostAndLog -Text "Setting last ran to $($Date)"
 
     if ($LocalLogging -like 'true') {
-        Write-Output 'Updating local logfile with results'
+        Write-HostAndLog -Text 'Updating local logfile with results'
         Update-LogFile -Log $log -Mode 'Local'
     }
 
     if (($FileLogging -like 'true') -and ($FileLogLevel -like 'full')) {
-        Write-Output 'Updating fileshare logfile with results'
+        Write-HostAndLog -Text 'Updating fileshare logfile with results'
         Update-LogFile -Log $log
     }
 
     if (($SQLLogging -eq 'true') -and -not $PSBoundParameters.ContainsKey('Webservice')) {
-        Write-Output 'Updating SQL database with results'
+        Write-HostAndLog -Text 'Updating SQL database with results'
         Update-SQL -Log $log
     }
 
     if ($PSBoundParameters.ContainsKey('Webservice')) {
-        Write-Output 'Updating SQL database with results using webservice'
+        Write-HostAndLog -Text 'Updating SQL database with results using webservice'
         Update-Webservice -URI $Webservice -Log $Log
     }
     Write-Verbose "Client Health script finished"
