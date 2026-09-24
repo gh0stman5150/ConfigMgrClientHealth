@@ -1178,13 +1178,16 @@ Begin {
     }
 
     Function Repair-ConfigMgrClient {
-        # Reinstalls a broken client, then waits 10 minutes for the installation to finish.
-        Param([Parameter(Mandatory=$true)]$Log)
+        # Reinstalls a broken client, uninstalling it first when -Uninstall is $true, then waits 10 minutes for the installation to finish.
+        Param(
+            [Parameter(Mandatory=$true)]$Log,
+            [Parameter(Mandatory=$false)]$Uninstall=$false
+        )
         Write-HostAndLog -Text "ConfigMgr Client Health thinks the agent need to be reinstalled.."
         # Lets check that registry settings are OK before we try a new installation.
         Test-CCMSetup1
 
-        Resolve-Client -Xml $xml -ClientInstallProperties $clientInstallProperties -FirstInstall $false
+        Resolve-Client -Xml $xml -ClientInstallProperties $clientInstallProperties -FirstInstall $false -Uninstall $Uninstall
         $Log.ClientInstalled = Get-SmallDateTime
         Start-Sleep 600
     }
@@ -1209,12 +1212,14 @@ Begin {
         if (Get-Service -Name ccmexec -ErrorAction SilentlyContinue) {
             Write-HostAndLog -Text "Configuration Manager Client is installed"
 
-            $Reinstall = Test-ClientDatabase -Log $Log
+            # A broken local database needs an uninstall before the reinstall.
+            $Uninstall = Test-ClientDatabase -Log $Log
+            $Reinstall = $Uninstall
             # Skip the start when a database check already requires a reinstall.
             if ($Reinstall -eq $false) { $Reinstall = Start-ClientService -Log $Log }
             if ((Test-ClientWMIConnection -Log $Log) -eq $true) { $Reinstall = $true }
 
-            if ($Reinstall -eq $true) { Repair-ConfigMgrClient -Log $Log }
+            if ($Reinstall -eq $true) { Repair-ConfigMgrClient -Log $Log -Uninstall $Uninstall }
         }
         else { Install-ConfigMgrClient -Log $Log }
     }
@@ -1556,7 +1561,9 @@ Begin {
         Param(
             [Parameter(Mandatory=$false)]$Xml,
             [Parameter(Mandatory=$true)]$ClientInstallProperties,
-            [Parameter(Mandatory=$false)]$FirstInstall=$false
+            [Parameter(Mandatory=$false)]$FirstInstall=$false,
+            # Runs ccmsetup /uninstall before the install. Used when the client's local database is broken.
+            [Parameter(Mandatory=$false)]$Uninstall=$false
             )
 
         $ClientShare = Get-XMLConfigClientShare

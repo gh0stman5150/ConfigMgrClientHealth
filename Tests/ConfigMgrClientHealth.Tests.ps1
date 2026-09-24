@@ -1306,7 +1306,7 @@ Describe 'Test-ConfigMgrClient' {
         function Test-CcmSQLCELog {}
         function Get-XMLConfigCcmSQLCELog {}
         function Test-CCMSetup1 {}
-        function Resolve-Client { param($Xml, $ClientInstallProperties, $FirstInstall) }
+        function Resolve-Client { param($Xml, $ClientInstallProperties, $FirstInstall, $Uninstall) }
         function Get-SmallDateTime {}
 
         function New-ClientLog { [pscustomobject]@{ ClientInstalledReason = $null; ClientInstalled = $null } }
@@ -1473,6 +1473,28 @@ Describe 'Test-ConfigMgrClient' {
 
         $log.ClientInstalledReason | Should -Be 'Service not running, failed to start.'
         Should -Invoke Resolve-Client -Times 1 -Exactly -ParameterFilter { $FirstInstall -eq $false }
+    }
+
+    It 'uninstalls before reinstalling when the database is <Case>' -ForEach @(
+        @{ Case = 'missing'; SdfPresent = $false; Enable = 'False'; Corrupt = $false },
+        @{ Case = 'corrupt'; SdfPresent = $true; Enable = 'True'; Corrupt = $true }
+    ) {
+        $script:SdfPresent = $SdfPresent
+        $script:SqlCeLogEnable = $Enable
+        $script:SqlCeCorrupt = $Corrupt
+
+        Test-ConfigMgrClient -Log (New-ClientLog)
+
+        Should -Invoke Resolve-Client -Times 1 -Exactly -ParameterFilter { $Uninstall -eq $true }
+    }
+
+    It 'reinstalls without uninstalling when only <Case> fails' -ForEach @(@{ Case = 'the SMS_Client check' }, @{ Case = 'the CcmExec start' }) {
+        if ($Case -eq 'the SMS_Client check') { $script:WmiBroken = $true }
+        else { $script:ServiceStatus = 'Stopped'; Mock Start-Service { Write-Error 'Cannot start service CcmExec' } }
+
+        Test-ConfigMgrClient -Log (New-ClientLog)
+
+        Should -Invoke Resolve-Client -Times 1 -Exactly -ParameterFilter { $Uninstall -eq $false }
     }
 }
 
