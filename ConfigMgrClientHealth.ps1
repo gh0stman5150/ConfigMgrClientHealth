@@ -296,8 +296,7 @@ Begin {
 
         #If the event log doesn't contain a start event then use the start time of the service's process.  Since processes can be shared this is less reliable.
         Try{
-            if ($PowerShellVersion -ge 6) { $ServiceProcessID = (Get-CimInstance Win32_Service -Filter "Name='$($Name)'").ProcessID }
-            else { $ServiceProcessID = (Get-WMIObject -Class Win32_Service -Filter "Name='$($Name)'").ProcessID }
+            $ServiceProcessID = (Get-CimOrWmiInstance Win32_Service -Filter "Name='$($Name)'").ProcessID
 
             [datetime]$ServiceStartTime = (Get-Process -Id $ServiceProcessID).StartTime
             Return (New-TimeSpan -Start $ServiceStartTime -End (Get-Date)).Days
@@ -527,8 +526,7 @@ Begin {
 
     Function Get-ClientVersion {
         try {
-            if ($PowerShellVersion -ge 6) { $obj = (Get-CimInstance -Namespace root/ccm SMS_Client).ClientVersion }
-            else { $obj = (Get-WmiObject -Namespace root/ccm SMS_Client).ClientVersion }
+            $obj = (Get-CimOrWmiInstance SMS_Client -Namespace root/ccm).ClientVersion
         }
         catch { $obj = $false }
         finally { Write-Output $obj }
@@ -561,8 +559,7 @@ Begin {
 
     Function Get-Domain {
         try {
-            if ($PowerShellVersion -ge 6) { $obj = (Get-CimInstance Win32_ComputerSystem).Domain }
-            else { $obj = (Get-WmiObject Win32_ComputerSystem).Domain }
+            $obj = (Get-CimOrWmiInstance Win32_ComputerSystem).Domain
         }
         catch { $obj = $false }
         finally { Write-Output $obj }
@@ -852,9 +849,7 @@ Begin {
     }
 
     Function Get-OSDiskFreeSpace {
-
-        if ($PowerShellVersion -ge 6) { $driveC = Get-CimInstance -Class Win32_LogicalDisk | Where-Object {$_.DeviceID -eq "$env:SystemDrive"} | Select-Object FreeSpace, Size }
-        else { $driveC = Get-WmiObject -Class Win32_LogicalDisk | Where-Object {$_.DeviceID -eq "$env:SystemDrive"} | Select-Object FreeSpace, Size }
+        $driveC = Get-CimOrWmiInstance Win32_LogicalDisk -Filter "DeviceID='$env:SystemDrive'" -Property FreeSpace, Size
         $freeSpace = (($driveC.FreeSpace / $driveC.Size) * 100)
         Write-Output ([math]::Round($freeSpace,2))
     }
@@ -1181,8 +1176,7 @@ Begin {
 
             # Test that we are able to connect to SMS_Client WMI class
             Try {
-                if ($PowerShellVersion -ge 6) { $WMI = Get-CimInstance -Namespace root/ccm -Class SMS_Client -ErrorAction Stop }
-                else { $WMI = Get-WmiObject -Namespace root/ccm -Class SMS_Client -ErrorAction Stop }
+                $WMI = Get-CimOrWmiInstance SMS_Client -Namespace root/ccm -ErrorAction Stop
             } Catch {
                 Write-Verbose 'Failed to connect to WMI namespace "root/ccm" class "SMS_Client". Clearing WMI and tagging client for reinstall to fix.'
 
@@ -1656,8 +1650,7 @@ Begin {
         }
 
         Try {
-            if ($PowerShellVersion -ge 6) { $WMI = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop }
-            else { $WMI = Get-WmiObject Win32_ComputerSystem -ErrorAction Stop }
+            $WMI = Get-CimOrWmiInstance Win32_ComputerSystem -ErrorAction Stop
         } Catch {
             Write-Verbose 'Failed to connect to WMI class "Win32_ComputerSystem". Voting for WMI fix...'
             $vote++
@@ -2133,22 +2126,18 @@ Begin {
         }
     }
 
-    function Test-AdminShare {
+    Function Test-AdminShare {
         Param([Parameter(Mandatory=$true)]$Log)
         Write-Verbose "Test the ADMIN$ and C$"
-        if ($PowerShellVersion -ge 6) { $share = Get-CimInstance Win32_Share | Where-Object {$_.Name -like 'ADMIN$'} }
-        else { $share = Get-WmiObject Win32_Share | Where-Object {$_.Name -like 'ADMIN$'} }
+        $shares = Get-CimOrWmiInstance Win32_Share -Filter "Name='ADMIN$' OR Name='C$'" -Property Name
 
-        if ($share.Name -contains 'ADMIN$') {
+        if ($shares.Name -contains 'ADMIN$') {
             $text = 'Adminshare Admin$: OK'
             Write-Output $text
         }
         else { $fix = $true }
 
-        if ($PowerShellVersion -ge 6) { $share = Get-CimInstance Win32_Share | Where-Object {$_.Name -like 'C$'} }
-        else { $share = Get-WmiObject Win32_Share | Where-Object {$_.Name -like 'C$'} }
-
-        if ($share.Name -contains "C$") {
+        if ($shares.Name -contains "C$") {
             $text = 'Adminshare C$: OK'
             Write-Output $text
         }
@@ -2166,8 +2155,7 @@ Begin {
 
     Function Test-DiskSpace {
         $XMLDiskSpace = Get-XMLConfigOSDiskFreeSpace
-        if ($PowerShellVersion -ge 6) { $driveC = Get-CimInstance -Class Win32_LogicalDisk | Where-Object {$_.DeviceID -eq "$env:SystemDrive"} | Select-Object FreeSpace, Size }
-        else { $driveC = Get-WmiObject -Class Win32_LogicalDisk | Where-Object {$_.DeviceID -eq "$env:SystemDrive"} | Select-Object FreeSpace, Size }
+        $driveC = Get-CimOrWmiInstance Win32_LogicalDisk -Filter "DeviceID='$env:SystemDrive'" -Property FreeSpace, Size
         $freeSpace = (($driveC.FreeSpace / $driveC.Size) * 100)
 
         if ($freeSpace -le $XMLDiskSpace) {
@@ -2263,8 +2251,7 @@ Begin {
         Param([Parameter(Mandatory=$true)]$Log)
         $FileLogLevel = ((Get-XMLConfigLoggingLevel).ToString()).ToLower()
         $i = 0
-        if ($PowerShellVersion -ge 6) { $devices = Get-CimInstance Win32_PNPEntity | Where-Object{ ($_.ConfigManagerErrorCode -ne 0) -and ($_.ConfigManagerErrorCode -ne 22) -and ($_.Name -notlike "*PS/2*") } | Select-Object Name, DeviceID }
-        else { $devices = Get-WmiObject Win32_PNPEntity | Where-Object{ ($_.ConfigManagerErrorCode -ne 0) -and ($_.ConfigManagerErrorCode -ne 22) -and ($_.Name -notlike "*PS/2*") } | Select-Object Name, DeviceID }
+        $devices = Get-CimOrWmiInstance Win32_PNPEntity -Property Name, DeviceID, ConfigManagerErrorCode | Where-Object{ ($_.ConfigManagerErrorCode -ne 0) -and ($_.ConfigManagerErrorCode -ne 22) -and ($_.Name -notlike "*PS/2*") } | Select-Object Name, DeviceID
         $devices | ForEach-Object {$i++}
 
         if ($devices -ne $null) {
@@ -2437,34 +2424,31 @@ Begin {
     }
 
     # SCCM Client evaluation policies
+    Function Invoke-ClientSchedule {
+        # Triggers a ConfigMgr client schedule by ID. Errors are ignored because callers only nudge the client.
+        Param([Parameter(Mandatory=$true)][string]$ScheduleId)
+        if ($PowerShellVersion -ge 6) { Invoke-CimMethod -Namespace 'root\ccm' -ClassName 'sms_client' -MethodName TriggerSchedule -Arguments @{sScheduleID=$ScheduleId} -ErrorAction SilentlyContinue | Out-Null }
+        else { Invoke-WmiMethod -Namespace 'root\ccm' -Class 'sms_client' -Name TriggerSchedule -ArgumentList @($ScheduleId) -ErrorAction SilentlyContinue | Out-Null }
+    }
+
     Function Get-SCCMPolicySourceUpdateMessage {
-        $trigger = "{00000000-0000-0000-0000-000000000032}"
-        if ($PowerShellVersion -ge 6) { Invoke-CimMethod -Namespace 'root\ccm' -ClassName 'sms_client' -MethodName TriggerSchedule -Arguments @{sScheduleID=$trigger} -ErrorAction SilentlyContinue | Out-Null }
-        else { Invoke-WmiMethod -Namespace 'root\ccm' -Class 'sms_client' -Name TriggerSchedule -ArgumentList @($trigger) -ErrorAction SilentlyContinue | Out-Null }
+        Invoke-ClientSchedule -ScheduleId '{00000000-0000-0000-0000-000000000032}'
     }
 
     Function Get-SCCMPolicySendUnsentStateMessages {
-        $trigger = "{00000000-0000-0000-0000-000000000111}"
-        if ($PowerShellVersion -ge 6) { Invoke-CimMethod -Namespace 'root\ccm' -ClassName 'sms_client' -MethodName TriggerSchedule -Arguments @{sScheduleID=$trigger} -ErrorAction SilentlyContinue | Out-Null }
-        else { Invoke-WmiMethod -Namespace 'root\ccm' -Class 'sms_client' -Name TriggerSchedule -ArgumentList @($trigger) -ErrorAction SilentlyContinue | Out-Null }
+        Invoke-ClientSchedule -ScheduleId '{00000000-0000-0000-0000-000000000111}'
     }
 
     Function Get-SCCMPolicyScanUpdateSource {
-        $trigger = "{00000000-0000-0000-0000-000000000113}"
-        if ($PowerShellVersion -ge 6) { Invoke-CimMethod -Namespace 'root\ccm' -ClassName 'sms_client' -MethodName TriggerSchedule -Arguments @{sScheduleID=$trigger} -ErrorAction SilentlyContinue | Out-Null }
-        else { Invoke-WmiMethod -Namespace 'root\ccm' -Class 'sms_client' -Name TriggerSchedule -ArgumentList @($trigger) -ErrorAction SilentlyContinue | Out-Null }
+        Invoke-ClientSchedule -ScheduleId '{00000000-0000-0000-0000-000000000113}'
     }
 
     Function Get-SCCMPolicyHardwareInventory {
-        $trigger = "{00000000-0000-0000-0000-000000000001}"
-        if ($PowerShellVersion -ge 6) { Invoke-CimMethod -Namespace 'root\ccm' -ClassName 'sms_client' -MethodName TriggerSchedule -Arguments @{sScheduleID=$trigger} -ErrorAction SilentlyContinue | Out-Null }
-        else { Invoke-WmiMethod -Namespace 'root\ccm' -Class 'sms_client' -Name TriggerSchedule -ArgumentList @($trigger) -ErrorAction SilentlyContinue | Out-Null }
+        Invoke-ClientSchedule -ScheduleId '{00000000-0000-0000-0000-000000000001}'
     }
 
     Function Get-SCCMPolicyMachineEvaluation {
-        $trigger = "{00000000-0000-0000-0000-000000000022}"
-        if ($PowerShellVersion -ge 6) { Invoke-CimMethod -Namespace 'root\ccm' -ClassName 'sms_client' -MethodName TriggerSchedule -Arguments @{sScheduleID=$trigger} -ErrorAction SilentlyContinue | Out-Null }
-        else { Invoke-WmiMethod -Namespace 'root\ccm' -Class 'sms_client' -Name TriggerSchedule -ArgumentList @($trigger) -ErrorAction SilentlyContinue | Out-Null }
+        Invoke-ClientSchedule -ScheduleId '{00000000-0000-0000-0000-000000000022}'
     }
 
     Function Get-Version {

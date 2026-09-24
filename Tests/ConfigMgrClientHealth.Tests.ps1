@@ -808,3 +808,229 @@ Describe 'Write-HostAndLog' {
         Should -Invoke Out-LogFile -Times 0 -Exactly
     }
 }
+
+Describe 'WMI query functions' {
+    BeforeAll {
+        $sourceContent = Get-Content -Path $script:SourceFile -Raw
+        $functionNames = @(
+            'Get-CimOrWmiInstance', 'Get-OSDiskFreeSpace', 'Test-DiskSpace', 'Test-AdminShare',
+            'Get-ClientVersion', 'Get-Domain', 'Test-MissingDrivers'
+        )
+        $script:WmiQuerySource = foreach ($name in $functionNames) {
+            $pattern = "(?ms)^\s*Function\s+$([regex]::Escape($name))\s*\{.*?^\s*\}\s*(?=^\s*Function\s+|\z)"
+            $functionMatch = [regex]::Match($sourceContent, $pattern)
+            if (-not $functionMatch.Success) {
+                throw "Unable to extract $name from ConfigMgrClientHealth.ps1"
+            }
+            $functionMatch.Value
+        }
+
+        # Get-WmiObject does not exist in PowerShell 7, so give the mock its real parameter shape.
+        function Get-WmiObject {
+            [CmdletBinding()]
+            param([Parameter(Position = 0)][string]$Class, [string]$Namespace, [string]$Filter, [string[]]$Property)
+        }
+        function Get-XMLConfigOSDiskFreeSpace {}
+        function Get-XMLConfigLoggingLevel {}
+        function Out-LogFile { param($Xml, $Text, $Severity) }
+
+        # Fake WMI data. The mock honours a WQL -Filter of the form "Name='x' OR Name='y'" so the
+        # same test passes whether the function filters in the query or with Where-Object afterwards.
+        function Get-FakeWmiInstance {
+            param($ClassName, $Filter)
+            $data = @{
+                Win32_LogicalDisk    = @(
+                    [pscustomobject]@{ DeviceID = 'Z:'; FreeSpace = 90; Size = 100 },
+                    [pscustomobject]@{ DeviceID = $env:SystemDrive; FreeSpace = $script:SystemDriveFree; Size = 200 }
+                )
+                Win32_Share          = @($script:Shares | ForEach-Object { [pscustomobject]@{ Name = $_ } })
+                SMS_Client           = @([pscustomobject]@{ ClientVersion = '5.00.9128.1000' })
+                Win32_ComputerSystem = @([pscustomobject]@{ Domain = 'contoso.example' })
+                Win32_PNPEntity      = @($script:Devices)
+            }
+            $instances = $data[$ClassName]
+            if ($Filter) {
+                $wanted = [regex]::Matches($Filter, "(\w+)='([^']*)'") | ForEach-Object { [pscustomobject]@{ Property = $_.Groups[1].Value; Value = $_.Groups[2].Value } }
+                $instances = $instances | Where-Object { $instance = $_; @($wanted | Where-Object { $instance.($_.Property) -eq $_.Value }).Count -gt 0 }
+            }
+            $instances
+        }
+    }
+
+    BeforeEach {
+        foreach ($source in $script:WmiQuerySource) { Invoke-Expression $source }
+
+        $script:OriginalSystemDrive = $env:SystemDrive
+        $env:SystemDrive = 'C:'
+        $PowerShellVersion = 7
+        $script:SystemDriveFree = 50
+        $script:Shares = @('ADMIN$', 'C$', 'IPC$')
+        $script:Devices = @()
+
+        Mock Get-CimInstance { Get-FakeWmiInstance -ClassName $ClassName -Filter $Filter }
+        Mock Get-WmiObject { Get-FakeWmiInstance -ClassName $Class -Filter $Filter }
+        Mock Get-XMLConfigOSDiskFreeSpace { 10 }
+        Mock Get-XMLConfigLoggingLevel { 'Full' }
+        Mock Out-LogFile {}
+        Mock Stop-Service {}
+        Mock Start-Service {}
+    }
+
+    AfterEach {
+        $env:SystemDrive = $script:OriginalSystemDrive
+    }
+
+    Context 'Get-OSDiskFreeSpace' {
+        It 'returns the system drive free space percentage on <Version>' -ForEach @(@{ Version = 7 }, @{ Version = 5 }) {
+            $PowerShellVersion = $Version
+
+            Get-OSDiskFreeSpace | Should -Be 25
+        }
+    }
+
+    Context 'Test-DiskSpace' {
+        It 'reports OK when free space is above the configured minimum' {
+            Test-DiskSpace | Should -Be 'Free space C: OK'
+        }
+
+        It 'writes an error when free space is at or below the configured minimum' {
+            $script:SystemDriveFree = 10
+            $ErrorActionPreference = 'Stop'
+
+            { Test-DiskSpace } | Should -Throw '*Local disk C: Less than 10 % free space*'
+        }
+    }
+
+    Context 'Test-AdminShare' {
+        It 'reports both shares OK without restarting the Server service on <Version>' -ForEach @(@{ Version = 7 }, @{ Version = 5 }) {
+            $PowerShellVersion = $Version
+            $log = [pscustomobject]@{ AdminShare = $null }
+
+            $output = Test-AdminShare -Log $log
+
+            $output | Should -Be @('Adminshare Admin$: OK', 'Adminshare C$: OK')
+            $log.AdminShare | Should -Be 'OK'
+            Should -Invoke Stop-Service -Times 0 -Exactly
+        }
+
+        It 'restarts the Server service when the <Missing> share is missing' -ForEach @(@{ Missing = 'C$' }, @{ Missing = 'ADMIN$' }) {
+            $script:Shares = @('ADMIN$', 'C$', 'IPC$') | Where-Object { $_ -ne $Missing }
+            $log = [pscustomobject]@{ AdminShare = $null }
+
+            Test-AdminShare -Log $log -WarningAction SilentlyContinue | Out-Null
+
+            $log.AdminShare | Should -Be 'Repaired'
+            Should -Invoke Stop-Service -Times 1 -Exactly -ParameterFilter { $Name -eq 'server' }
+            Should -Invoke Start-Service -Times 1 -Exactly -ParameterFilter { $Name -eq 'server' }
+        }
+    }
+
+    Context 'Get-ClientVersion and Get-Domain' {
+        It 'returns the client version and domain on <Version>' -ForEach @(@{ Version = 7 }, @{ Version = 5 }) {
+            $PowerShellVersion = $Version
+
+            Get-ClientVersion | Should -Be '5.00.9128.1000'
+            Get-Domain | Should -Be 'contoso.example'
+        }
+
+        It 'returns false when the query throws' {
+            Mock Get-CimInstance { throw 'Invalid namespace' }
+
+            Get-ClientVersion | Should -BeFalse
+            Get-Domain | Should -BeFalse
+        }
+    }
+
+    Context 'Test-MissingDrivers' {
+        It 'reports OK when no device has a driver problem' {
+            $script:Devices = @(
+                [pscustomobject]@{ Name = 'Disk'; DeviceID = 'D1'; ConfigManagerErrorCode = 0 },
+                [pscustomobject]@{ Name = 'Disabled'; DeviceID = 'D2'; ConfigManagerErrorCode = 22 },
+                [pscustomobject]@{ Name = 'PS/2 Keyboard'; DeviceID = 'D3'; ConfigManagerErrorCode = 28 }
+            )
+            $log = [pscustomobject]@{ Drivers = $null }
+
+            Test-MissingDrivers -Log $log | Should -Be 'Drivers: OK'
+            $log.Drivers | Should -Be 'OK'
+        }
+
+        It 'counts and logs devices with driver problems' {
+            $script:Devices = @(
+                [pscustomobject]@{ Name = 'Disk'; DeviceID = 'D1'; ConfigManagerErrorCode = 0 },
+                [pscustomobject]@{ Name = 'Camera'; DeviceID = 'D4'; ConfigManagerErrorCode = 28 },
+                [pscustomobject]@{ Name = 'Reader'; DeviceID = 'D5'; ConfigManagerErrorCode = 1 }
+            )
+            $log = [pscustomobject]@{ Drivers = $null }
+
+            Test-MissingDrivers -Log $log -WarningAction SilentlyContinue | Out-Null
+
+            $log.Drivers | Should -Be '2 unknown or faulty driver(s)'
+            Should -Invoke Out-LogFile -Times 1 -Exactly -ParameterFilter { $Text -eq 'Missing or faulty driver: Camera. Device ID: D4' }
+            Should -Invoke Out-LogFile -Times 1 -Exactly -ParameterFilter { $Text -eq 'Missing or faulty driver: Reader. Device ID: D5' }
+        }
+    }
+}
+
+Describe 'Client schedule triggers' {
+    BeforeAll {
+        $sourceContent = Get-Content -Path $script:SourceFile -Raw
+        $script:ScheduleFunctions = @{
+            'Get-SCCMPolicySourceUpdateMessage'     = '{00000000-0000-0000-0000-000000000032}'
+            'Get-SCCMPolicySendUnsentStateMessages' = '{00000000-0000-0000-0000-000000000111}'
+            'Get-SCCMPolicyScanUpdateSource'        = '{00000000-0000-0000-0000-000000000113}'
+            'Get-SCCMPolicyHardwareInventory'       = '{00000000-0000-0000-0000-000000000001}'
+            'Get-SCCMPolicyMachineEvaluation'       = '{00000000-0000-0000-0000-000000000022}'
+        }
+        # Invoke-ClientSchedule is optional so these tests also pass on the code before the helper existed.
+        $script:ScheduleSource = foreach ($name in @($script:ScheduleFunctions.Keys) + 'Invoke-ClientSchedule') {
+            $pattern = "(?ms)^\s*Function\s+$([regex]::Escape($name))\s*\{.*?^\s*\}\s*(?=^\s*Function\s+|\z)"
+            $functionMatch = [regex]::Match($sourceContent, $pattern)
+            if ($functionMatch.Success) { $functionMatch.Value }
+            elseif ($name -ne 'Invoke-ClientSchedule') { throw "Unable to extract $name from ConfigMgrClientHealth.ps1" }
+        }
+
+        # Invoke-WmiMethod does not exist in PowerShell 7, so give the mock its real parameter shape.
+        function Invoke-WmiMethod {
+            [CmdletBinding()]
+            param([string]$Namespace, [string]$Class, [string]$Name, [object[]]$ArgumentList)
+        }
+    }
+
+    BeforeEach {
+        foreach ($source in $script:ScheduleSource) { Invoke-Expression $source }
+
+        Mock Invoke-CimMethod {}
+        Mock Invoke-WmiMethod {}
+    }
+
+    It '<Name> triggers its schedule with Invoke-CimMethod on PowerShell 6 or later' -ForEach @(
+        @{ Name = 'Get-SCCMPolicySourceUpdateMessage'; Id = '{00000000-0000-0000-0000-000000000032}' },
+        @{ Name = 'Get-SCCMPolicySendUnsentStateMessages'; Id = '{00000000-0000-0000-0000-000000000111}' },
+        @{ Name = 'Get-SCCMPolicyScanUpdateSource'; Id = '{00000000-0000-0000-0000-000000000113}' },
+        @{ Name = 'Get-SCCMPolicyHardwareInventory'; Id = '{00000000-0000-0000-0000-000000000001}' },
+        @{ Name = 'Get-SCCMPolicyMachineEvaluation'; Id = '{00000000-0000-0000-0000-000000000022}' }
+    ) {
+        $PowerShellVersion = 7
+
+        & $Name | Should -BeNullOrEmpty
+
+        Should -Invoke Invoke-WmiMethod -Times 0 -Exactly
+        Should -Invoke Invoke-CimMethod -Times 1 -Exactly -ParameterFilter {
+            $Namespace -eq 'root\ccm' -and $ClassName -eq 'sms_client' -and $MethodName -eq 'TriggerSchedule' -and $Arguments.sScheduleID -eq $Id -and $ErrorAction -eq 'SilentlyContinue'
+        }
+    }
+
+    It '<Name> triggers its schedule with Invoke-WmiMethod on Windows PowerShell' -ForEach @(
+        @{ Name = 'Get-SCCMPolicySourceUpdateMessage'; Id = '{00000000-0000-0000-0000-000000000032}' },
+        @{ Name = 'Get-SCCMPolicyMachineEvaluation'; Id = '{00000000-0000-0000-0000-000000000022}' }
+    ) {
+        $PowerShellVersion = 5
+
+        & $Name | Should -BeNullOrEmpty
+
+        Should -Invoke Invoke-CimMethod -Times 0 -Exactly
+        Should -Invoke Invoke-WmiMethod -Times 1 -Exactly -ParameterFilter {
+            $Namespace -eq 'root\ccm' -and $Class -eq 'sms_client' -and $Name -eq 'TriggerSchedule' -and $ArgumentList[0] -eq $Id -and $ErrorAction -eq 'SilentlyContinue'
+        }
+    }
+}
