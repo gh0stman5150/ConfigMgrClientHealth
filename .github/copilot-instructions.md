@@ -44,7 +44,9 @@ The script is one `[CmdletBinding()]` script with `Begin` / `Process` / `End` bl
 
 - **Begin**: sets `$Version`, `$PowerShellVersion`, and `$global:ScriptPath`. If neither `-Config` nor `-Webservice` is passed, it defaults `$Config` to `Config.xml` next to the script. It validates and loads the XML into `$Xml`, then defines about 150 functions *inside the Begin block*. These functions share script-level state implicitly (`$Xml`, `$config`, `$PowerShellVersion`, `$global:ScriptPath`) rather than taking it as parameters.
 - **Process**: runs the health checks in order: admin check, task-sequence check (exits 2), WMI, compliance-state refresh, client install/version, services, site code, cache, log size, provisioning mode, certificate, HW inventory, metering, DNS, BITS, and so on. Most checks run only when their `config.xml` toggle is on. Each `Test-*` function records its result on a shared `$Log` object from `New-LogObject` and may set flags such as `$reinstall` / `$restartCCMExec` that later steps act on.
-- **End**: writes `LastRun` to `HKLM:\Software\ConfigMgrClientHealth`, then writes `$Log` to the local log file, the share log file, SQL (`Update-SQL`, only when `-Webservice` is not given), or the webservice (`Update-Webservice`).
+- **End**: writes `LastRun` to `HKLM:\Software\ConfigMgrClientHealth`, then writes `$Log` to the local log file, the share log file, SQL (`Update-SQL`, only when `-Webservice` is not given), or the webservice (`Update-Webservice`). It exits with code 1 when a needed client install could not be started (`$ClientInstallFailed`), after recording the results.
+
+Don't use `Exit` inside a function to report a failure. It skips the End block, so the run leaves no results. Return a value, record the reason on `$Log`, and let the caller decide. Give every wait loop a timeout; `Wait-ProcessExit` waits for a process with a 15 minute default.
 
 Key function families:
 

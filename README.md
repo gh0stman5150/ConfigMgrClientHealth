@@ -133,6 +133,8 @@ Use the following checks when the script does not behave as expected:
 - Confirm the client source share contains the expected `ccmsetup.exe` payload.
 - Review verbose output and the generated client health log for which remediation step failed.
 - Verify local permissions and whether the script is running under a sufficiently privileged context.
+- If the client needs to be installed or reinstalled but `ccmsetup.exe` on the client share can't be reached, the script logs the error, skips the remaining checks, records "Client installer not reachable." in `ClientInstalledReason`, writes the results to the configured logs, SQL, or webservice, and exits with code 1.
+- The script waits at most 15 minutes for `ccmsetup.exe`, for each `wusa.exe` update install, and for removing task sequence client settings. If a ccmsetup uninstall is still running after 15 minutes, it skips the reinstall, records "Uninstall timed out.", and exits with code 1. An install that is still running is logged as a warning and left to finish on its own.
 - If the log says "The health checks did not run" and the script exits with code 1, the launcher started `powershell.exe -File` with redirected standard input. Windows PowerShell 5.1 then skips the script's health checks. Start it without redirecting standard input.
 
 The script writes log output using a CMTrace-style format and can fall back to a local `C:\ClientHealth` path depending on configuration.

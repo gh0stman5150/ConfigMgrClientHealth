@@ -844,11 +844,33 @@ Describe 'Script entry blocks' {
         $rotate | Should -BeLessThan (Get-FirstCallOffset -Block $script:ProcessBlock -Name 'Test-InTaskSequence')
     }
 
+    It 'skips the remaining checks when the client install could not be started, leaving End to record the results' {
+        $statements = @($script:ProcessBlock.Statements)
+        $index = [array]::FindIndex($statements, [Predicate[object]] { param($s) $s.Extent.Text -like 'if ((Test-ConfigMgrClient -Log $Log) -eq $false)*' })
+        $index | Should -BeGreaterThan -1
+        $body = $statements[$index].Clauses[0].Item2.Statements
+        $body[0].Extent.Text | Should -Be '$ClientInstallFailed = $true'
+        $body[1] | Should -BeOfType [System.Management.Automation.Language.ReturnStatementAst]
+    }
+
     It 'does not reinstall the client again at the end of a run that already reinstalled it' {
         $statements = @($script:ProcessBlock.Statements)
-        $index = [array]::FindIndex($statements, [Predicate[object]] { param($s) $s.Extent.Text -eq 'Test-ConfigMgrClient -Log $Log' })
-        $index | Should -BeGreaterThan -1
+        $index = [array]::FindIndex($statements, [Predicate[object]] { param($s) $s.Extent.Text -like 'if ((Test-ConfigMgrClient -Log $Log) -eq $false)*' })
         $statements[$index + 1].Extent.Text | Should -Be 'if ($null -ne $Log.ClientInstalled) { $reinstall = $false }'
+    }
+
+    It 'passes the log to the end-of-run reinstall and flags a reinstall that could not be started' {
+        $call = $script:ProcessBlock.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] -and $args[0].GetCommandName() -eq 'Resolve-Client' }, $true) | Select-Object -First 1
+        $call.Extent.Text | Should -Match '-Log \$Log'
+        $ifStatement = $call.Parent
+        while ($ifStatement -isnot [System.Management.Automation.Language.IfStatementAst]) { $ifStatement = $ifStatement.Parent }
+        $ifStatement.ElseClause.Extent.Text | Should -Match '\$ClientInstallFailed = \$true'
+    }
+
+    It 'exits with code 1 after recording the results when the client install could not be started' {
+        $last = $script:EndBlock.Statements[-1]
+        $last.Extent.Text | Should -Be 'if ($ClientInstallFailed -eq $true) { Exit 1 }'
+        $last.Extent.StartOffset | Should -BeGreaterThan (Get-FirstCallOffset -Block $script:EndBlock -Name 'Update-Webservice')
     }
 }
 
@@ -1240,7 +1262,7 @@ Describe 'PowerShell 7 compatibility' {
         function Get-XMLConfigHardwareInventoryFix {}
         function Get-SCCMPolicyHardwareInventory {}
         function Get-XMLConfigClientSettingsCheckFix {}
-        function Write-HostAndLog { param($Text) }
+        function Write-HostAndLog { param($Text, $ForegroundColor, $Severity) }
 
         function ConvertTo-Dmtf { param([datetime]$Date) [System.Management.ManagementDateTimeConverter]::ToDmtfDateTime($Date) }
     }
@@ -1405,6 +1427,19 @@ Describe 'PowerShell 7 compatibility' {
             Should -Invoke Remove-WmiObject -Times 2 -Exactly
         }
 
+        It 'stops retrying and reports Error when the settings are still present after 15 minutes' {
+            Mock Remove-CimInstance {}
+            # Each Get-Date call moves the clock on one minute.
+            $script:Now = [datetime]'2026-01-15 08:00:00'
+            Mock Get-Date { $script:Now = $script:Now.AddMinutes(1); $script:Now }
+            $log = [pscustomobject]@{ ClientSettings = $null }
+
+            Test-ClientSettingsConfiguration -Log $log
+
+            $log.ClientSettings | Should -Be 'Error'
+            Should -Invoke Write-HostAndLog -Times 1 -Exactly -ParameterFilter { $Severity -eq 2 -and $Text -like '*still present after 15 minutes*' }
+        }
+
         It 'reports OK when no task sequence client settings exist' {
             $script:Policies.RemoveAt(0); $script:Policies.RemoveAt(0)
             $log = [pscustomobject]@{ ClientSettings = $null }
@@ -1479,7 +1514,7 @@ Describe 'Test-ConfigMgrClient' {
         function Test-CcmSQLCELog {}
         function Get-XMLConfigCcmSQLCELog {}
         function Test-CCMSetup1 {}
-        function Resolve-Client { param($Xml, $ClientInstallProperties, $FirstInstall, $Uninstall) }
+        function Resolve-Client { param($Xml, $ClientInstallProperties, $FirstInstall, $Uninstall, $Log) }
         function Get-SmallDateTime {}
 
         function New-ClientLog { [pscustomobject]@{ ClientInstalledReason = $null; ClientInstalled = $null } }
@@ -1512,7 +1547,7 @@ Describe 'Test-ConfigMgrClient' {
         Mock Test-CcmSQLCELog { $script:SqlCeCorrupt }
         Mock Get-XMLConfigCcmSQLCELog { $script:SqlCeLogEnable }
         Mock Test-CCMSetup1 {}
-        Mock Resolve-Client {}
+        Mock Resolve-Client { $true }
         Mock Get-SmallDateTime { '2026-01-15 08:30:00' }
         Mock Set-Service {}
         Mock Start-Service {}
@@ -1522,7 +1557,7 @@ Describe 'Test-ConfigMgrClient' {
     It 'leaves a healthy client alone' {
         $log = New-ClientLog
 
-        Test-ConfigMgrClient -Log $log
+        Test-ConfigMgrClient -Log $log | Should -BeTrue
 
         Should -Invoke Write-HostAndLog -Times 1 -Exactly -ParameterFilter { $Text -eq 'Configuration Manager Client is installed' }
         Should -Invoke Resolve-Client -Times 0 -Exactly
@@ -1569,10 +1604,10 @@ Describe 'Test-ConfigMgrClient' {
 
     It 'installs the client when the CcmExec service does not exist' {
         $script:ServiceInstalled = $false
-        Mock Resolve-Client { $script:ServiceInstalled = $true }
+        Mock Resolve-Client { $script:ServiceInstalled = $true; $true }
         $log = New-ClientLog
 
-        Test-ConfigMgrClient -Log $log
+        Test-ConfigMgrClient -Log $log | Should -BeTrue
 
         Should -Invoke Write-HostAndLog -Times 1 -Exactly -ParameterFilter { $Text -eq 'Configuration Manager client is not installed. Installing...' }
         Should -Invoke Resolve-Client -Times 1 -Exactly -ParameterFilter { $FirstInstall -eq $true }
@@ -1668,6 +1703,196 @@ Describe 'Test-ConfigMgrClient' {
         Test-ConfigMgrClient -Log (New-ClientLog)
 
         Should -Invoke Resolve-Client -Times 1 -Exactly -ParameterFilter { $Uninstall -eq $false }
+    }
+
+    It 'returns $false without recording an install or waiting when the reinstall cannot be started' {
+        $script:SdfPresent = $false
+        # The real Resolve-Client adds the reason itself when it gets -Log.
+        Mock Resolve-Client { New-ClientInstalledReason -Log $Log -Message 'Client installer not reachable.'; $false }
+        $log = New-ClientLog
+
+        Test-ConfigMgrClient -Log $log | Should -BeFalse
+
+        Should -Invoke Resolve-Client -Times 1 -Exactly -ParameterFilter { $null -ne $Log }
+        Should -Invoke Start-Sleep -Times 0 -Exactly
+        $log.ClientInstalled | Should -BeNullOrEmpty
+        $log.ClientInstalledReason | Should -Be 'ConfigMgr Client database files missing. Client installer not reachable.'
+    }
+
+    It 'returns $false without recording an install when the first install cannot be started' {
+        $script:ServiceInstalled = $false
+        Mock Resolve-Client { New-ClientInstalledReason -Log $Log -Message 'Client installer not reachable.'; $false }
+        $log = New-ClientLog
+
+        Test-ConfigMgrClient -Log $log | Should -BeFalse
+
+        $log.ClientInstalled | Should -BeNullOrEmpty
+        $log.ClientInstalledReason | Should -Be 'No agent found. Client installer not reachable.'
+        Should -Invoke Out-LogFile -Times 0 -Exactly
+    }
+}
+
+Describe 'Resolve-Client' {
+    BeforeAll {
+        $sourceContent = Get-Content -Path $script:SourceFile -Raw
+        $script:ResolveSource = foreach ($name in 'Resolve-Client', 'Wait-ProcessExit', 'New-ClientInstalledReason') {
+            $pattern = "(?ms)^\s*Function\s+$([regex]::Escape($name))\s*\{.*?^\s*\}\s*(?=^\s*Function\s+|\z)"
+            $functionMatch = [regex]::Match($sourceContent, $pattern)
+            if (-not $functionMatch.Success) {
+                throw "Unable to extract $name from ConfigMgrClientHealth.ps1"
+            }
+            $functionMatch.Value
+        }
+
+        function Get-XMLConfigClientShare { '\\cm01.contoso.com\Client' }
+        function Test-CCMSetup1 {}
+        function Register-DLLFile { param($FilePath) }
+        function Write-HostAndLog { param($Text, $ForegroundColor, $Severity) }
+        function New-ClientLog { [pscustomobject]@{ ClientInstalledReason = $null } }
+    }
+
+    BeforeEach {
+        foreach ($source in $script:ResolveSource) { Invoke-Expression $source }
+
+        # Each Get-Date call moves the clock on one minute, so a process that never exits reaches the 15 minute timeout quickly.
+        $script:Now = [datetime]'2026-01-15 08:00:00'
+        Mock Get-Date { $script:Now = $script:Now.AddMinutes(1); $script:Now }
+        Mock Test-Path { $true }
+        Mock Test-CCMSetup1 {}
+        Mock Register-DLLFile {}
+        Mock Start-Process {}
+        Mock Start-Sleep {}
+        Mock Get-Process {}
+        Mock Write-HostAndLog {}
+        Mock Write-Warning {}
+    }
+
+    It 'returns $true after starting the installation' {
+        Resolve-Client -ClientInstallProperties '/mp:cm01.contoso.com' -Log (New-ClientLog) | Should -BeTrue
+
+        Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter { $FilePath -eq '\\cm01.contoso.com\Client\ccmsetup.exe' -and $ArgumentList -eq '/mp:cm01.contoso.com' }
+    }
+
+    It 'logs the error, records the reason and returns $false when the installer cannot be reached' {
+        Mock Test-Path { $false }
+        $log = New-ClientLog
+
+        Resolve-Client -ClientInstallProperties '/mp:cm01.contoso.com' -Log $log | Should -BeFalse
+
+        Should -Invoke Start-Process -Times 0 -Exactly
+        Should -Invoke Write-HostAndLog -Times 1 -Exactly -ParameterFilter { $Severity -eq 3 -and $Text -like 'ERROR: Client tagged for reinstall, but failed to access client installer:*' }
+        $log.ClientInstalledReason | Should -Be 'Client installer not reachable.'
+    }
+
+    It 'does not start the install when the uninstall is still running after 15 minutes' {
+        Mock Get-Process { [pscustomobject]@{ Name = 'ccmsetup' } }
+        $log = New-ClientLog
+
+        Resolve-Client -ClientInstallProperties '/mp:cm01.contoso.com' -Uninstall $true -Log $log | Should -BeFalse
+
+        Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter { $ArgumentList -eq '/uninstall' }
+        Should -Invoke Start-Process -Times 0 -Exactly -ParameterFilter { $ArgumentList -ne '/uninstall' }
+        $log.ClientInstalledReason | Should -Be 'Uninstall timed out.'
+    }
+
+    It 'stops waiting for an installation that is still running after 15 minutes and returns $true' {
+        Mock Get-Process { [pscustomobject]@{ Name = 'ccmsetup' } }
+
+        Resolve-Client -ClientInstallProperties '/mp:cm01.contoso.com' -Log (New-ClientLog) | Should -BeTrue
+
+        Should -Invoke Write-HostAndLog -Times 1 -Exactly -ParameterFilter { $Severity -eq 2 -and $Text -like '*still running after 15 minutes*' }
+        Should -Invoke Get-Process -Times 15 -Exactly
+    }
+}
+
+Describe 'Wait-ProcessExit' {
+    BeforeAll {
+        $sourceContent = Get-Content -Path $script:SourceFile -Raw
+        $functionMatch = [regex]::Match($sourceContent, '(?ms)^\s*Function\s+Wait-ProcessExit\s*\{.*?^\s*\}\s*(?=^\s*Function\s+|\z)')
+        if (-not $functionMatch.Success) {
+            throw 'Unable to extract Wait-ProcessExit from ConfigMgrClientHealth.ps1'
+        }
+        $script:WaitSource = $functionMatch.Value
+    }
+
+    BeforeEach {
+        Invoke-Expression $script:WaitSource
+        $script:Now = [datetime]'2026-01-15 08:00:00'
+        Mock Get-Date { $script:Now = $script:Now.AddMinutes(1); $script:Now }
+        Mock Start-Sleep {}
+    }
+
+    It 'returns $true once the process has exited' {
+        $script:Checks = 0
+        Mock Get-Process { $script:Checks++; if ($script:Checks -lt 3) { [pscustomobject]@{ Name = 'wusa' } } }
+
+        Wait-ProcessExit -Name 'wusa' -PollSeconds 2 | Should -BeTrue
+
+        Should -Invoke Get-Process -Times 3 -Exactly
+        Should -Invoke Start-Sleep -Times 3 -Exactly -ParameterFilter { $Seconds -eq 2 }
+    }
+
+    It 'returns $false when the process is still running after the timeout' {
+        Mock Get-Process { [pscustomobject]@{ Name = 'wusa' } }
+
+        Wait-ProcessExit -Name 'wusa' | Should -BeFalse
+
+        Should -Invoke Get-Process -Times 15 -Exactly
+    }
+}
+
+Describe 'Test-Update' {
+    BeforeAll {
+        $sourceContent = Get-Content -Path $script:SourceFile -Raw
+        $functionMatch = [regex]::Match($sourceContent, '(?ms)^\s*Function\s+Test-Update\s*\{.*?^\s*\}\s*(?=^\s*Function\s+|\z)')
+        if (-not $functionMatch.Success) {
+            throw 'Unable to extract Test-Update from ConfigMgrClientHealth.ps1'
+        }
+        $script:UpdateSource = $functionMatch.Value
+
+        function Get-XMLConfigUpdatesShare { '\\cm01.contoso.com\Updates' }
+        function Get-XMLConfigUpdatesFix { 'True' }
+        function Get-OperatingSystemDisplayName { 'Windows 11 64-Bit 24H2' }
+        function Get-LocalFilesPath { 'C:\ClientHealth' }
+        function Wait-ProcessExit { param($Name, $TimeoutMinutes, $PollSeconds) }
+        function Write-HostAndLog { param($Text, $ForegroundColor, $Severity) }
+        # A function takes precedence over the real wusa.exe.
+        function wusa.exe {}
+    }
+
+    BeforeEach {
+        Invoke-Expression $script:UpdateSource
+        $PowerShellVersion = 7
+        Mock Test-Path { $true }
+        Mock Get-ChildItem { [pscustomobject]@{ Name = 'windows11.0-kb5000001-x64.msu' } }
+        Mock Get-CimInstance { [pscustomobject]@{ HotFixID = 'KB4000000' } }
+        Mock Copy-Item {}
+        Mock Remove-Item {}
+        Mock wusa.exe {}
+        Mock Write-HostAndLog {}
+        Mock Write-Warning {}
+    }
+
+    It 'removes the installer file after wusa finishes' {
+        Mock Wait-ProcessExit { $true }
+        $log = [pscustomobject]@{ Updates = $null }
+
+        Test-Update -Log $log
+
+        Should -Invoke Wait-ProcessExit -Times 1 -Exactly -ParameterFilter { $Name -eq 'wusa' }
+        Should -Invoke Remove-Item -Times 1 -Exactly
+        $log.Updates | Should -Be 'KB5000001'
+    }
+
+    It 'stops waiting and leaves the file for CleanUp when wusa is still running after 15 minutes' {
+        Mock Wait-ProcessExit { $false }
+
+        Test-Update -Log ([pscustomobject]@{ Updates = $null })
+
+        Should -Invoke Remove-Item -Times 0 -Exactly
+        Should -Invoke Write-HostAndLog -Times 1 -Exactly -ParameterFilter {
+            $Severity -eq 2 -and $Text -eq 'Update windows11.0-kb5000001-x64.msu: Installation was still running after 15 minutes. Continuing without waiting for it.'
+        }
     }
 }
 

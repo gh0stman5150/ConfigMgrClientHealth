@@ -750,6 +750,7 @@ Begin {
 
 	Function Test-ClientSettingsConfiguration {
 		Param([Parameter(Mandatory=$true)]$Log)
+		$severity = 1
 
 		$ClientSettingsConfig = @(Get-CimOrWmiInstance CCM_ClientAgentConfig -Namespace "root\ccm\Policy\DefaultMachine\RequestedConfig" -ErrorAction SilentlyContinue | Where-Object {$_.PolicySource -eq "CcmTaskSequence"})
 
@@ -759,11 +760,23 @@ Begin {
 
 			if ($fix -eq "true") {
 				$text = "ClientSettings: Error. Remediating"
+				# Stop after 15 minutes if the settings can't be removed, instead of retrying forever.
+				$deadline = (Get-Date).AddMinutes(15)
 				DO {
 					Get-CimOrWmiInstance CCM_ClientAgentConfig -Namespace "root\ccm\Policy\DefaultMachine\RequestedConfig" | Where-Object {$_.PolicySource -eq "CcmTaskSequence"} | Select-Object -first 1000 | ForEach-Object {Remove-CimOrWmiInstance -InputObject $_}
-				} Until (!(Get-CimOrWmiInstance CCM_ClientAgentConfig -Namespace "root\ccm\Policy\DefaultMachine\RequestedConfig" | Where-Object {$_.PolicySource -eq "CcmTaskSequence"} | Select-Object -first 1))
-				$log.ClientSettings = 'Remediated'
-				$obj = $true
+					$remaining = Get-CimOrWmiInstance CCM_ClientAgentConfig -Namespace "root\ccm\Policy\DefaultMachine\RequestedConfig" | Where-Object {$_.PolicySource -eq "CcmTaskSequence"} | Select-Object -first 1
+				} Until ((!$remaining) -or ((Get-Date) -ge $deadline))
+
+				if ($remaining) {
+					$text = "ClientSettings: Error. Task sequence client settings were still present after 15 minutes of remediation"
+					$severity = 2
+					$log.ClientSettings = 'Error'
+					$obj = $false
+				}
+				else {
+					$log.ClientSettings = 'Remediated'
+					$obj = $true
+				}
 			}
 			else {
 				$text = "ClientSettings: Error. Monitor only"
@@ -777,7 +790,7 @@ Begin {
 			$log.ClientSettings = 'OK'
 			$Obj = $false
 		}
-		Write-HostAndLog -Text $text
+		Write-HostAndLog -Text $text -Severity $severity
     }
 
     Function New-ClientInstalledReason {
@@ -1077,8 +1090,9 @@ Begin {
                             $install = Join-Path $temppath $hotfix
 
                             wusa.exe $install /quiet /norestart
-                            While (Get-Process wusa -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 2 }
-                            Remove-Item $install -Force -Recurse
+                            if ((Wait-ProcessExit -Name 'wusa' -PollSeconds 2) -eq $true) { Remove-Item $install -Force -Recurse }
+                            # The file is still in use, so CleanUp removes it with the rest of the Temp folder.
+                            else { Write-HostAndLog -Text "Update $($hotfix): Installation was still running after 15 minutes. Continuing without waiting for it." -Severity 2 }
 
                         }
                         else {
@@ -1163,6 +1177,7 @@ Begin {
 
     Function Repair-ConfigMgrClient {
         # Reinstalls a broken client, uninstalling it first when -Uninstall is $true, then waits 10 minutes for the installation to finish.
+        # Returns $false when the reinstall could not be started.
         Param(
             [Parameter(Mandatory=$true)]$Log,
             [Parameter(Mandatory=$false)]$Uninstall=$false
@@ -1171,27 +1186,37 @@ Begin {
         # Lets check that registry settings are OK before we try a new installation.
         Test-CCMSetup1
 
-        Resolve-Client -Xml $xml -ClientInstallProperties $clientInstallProperties -FirstInstall $false -Uninstall $Uninstall
-        $Log.ClientInstalled = Get-SmallDateTime
-        Start-Sleep 600
+        $started = Resolve-Client -Xml $xml -ClientInstallProperties $clientInstallProperties -FirstInstall $false -Uninstall $Uninstall -Log $Log
+        if ($started -eq $true) {
+            $Log.ClientInstalled = Get-SmallDateTime
+            Start-Sleep 600
+        }
+        Write-Output $started
     }
 
     Function Install-ConfigMgrClient {
         # Installs the client when CcmExec is missing, and writes a failure to the share log if the agent still is not found.
+        # Returns $false when the installation could not be started.
         Param([Parameter(Mandatory=$true)]$Log)
         Write-HostAndLog -Text "Configuration Manager client is not installed. Installing..."
-        Resolve-Client -Xml $xml -ClientInstallProperties $clientInstallProperties -FirstInstall $true
         New-ClientInstalledReason -Log $Log -Message "No agent found."
-        $Log.ClientInstalled = Get-SmallDateTime
+        $started = Resolve-Client -Xml $xml -ClientInstallProperties $clientInstallProperties -FirstInstall $true -Log $Log
 
-        if (-not (Get-Service -Name ccmexec -ErrorAction SilentlyContinue)) {
-            Out-LogFile -Xml $xml -Text "ConfigMgr Client installation failed. Agent not detected 10 minutes after triggering installation." -Mode "ClientInstall" -Severity 3
+        if ($started -eq $true) {
+            $Log.ClientInstalled = Get-SmallDateTime
+
+            if (-not (Get-Service -Name ccmexec -ErrorAction SilentlyContinue)) {
+                Out-LogFile -Xml $xml -Text "ConfigMgr Client installation failed. Agent not detected 10 minutes after triggering installation." -Mode "ClientInstall" -Severity 3
+            }
         }
+        Write-Output $started
     }
 
     Function Test-ConfigMgrClient {
         # Installs the client when the CcmExec service is missing. Otherwise runs the health checks and reinstalls the client if any of them fail.
+        # Returns $false when a needed install or reinstall could not be started, otherwise $true.
         Param([Parameter(Mandatory=$true)]$Log)
+        $obj = $true
 
         if (Get-Service -Name ccmexec -ErrorAction SilentlyContinue) {
             Write-HostAndLog -Text "Configuration Manager Client is installed"
@@ -1203,9 +1228,10 @@ Begin {
             if ($Reinstall -eq $false) { $Reinstall = Start-ClientService -Log $Log }
             if ((Test-ClientWMIConnection -Log $Log) -eq $true) { $Reinstall = $true }
 
-            if ($Reinstall -eq $true) { Repair-ConfigMgrClient -Log $Log -Uninstall $Uninstall }
+            if ($Reinstall -eq $true) { $obj = Repair-ConfigMgrClient -Log $Log -Uninstall $Uninstall }
         }
-        else { Install-ConfigMgrClient -Log $Log }
+        else { $obj = Install-ConfigMgrClient -Log $Log }
+        Write-Output $obj
     }
 
     Function Test-ClientCacheSize {
@@ -1541,13 +1567,32 @@ Begin {
         catch { Write-Warning 'Failed clearing ConfigMgr orphaned cache items.' }
         }
 
+    Function Wait-ProcessExit {
+        # Waits for every process with this name to exit. Returns $true when they have exited, or $false if one is still running after TimeoutMinutes.
+        Param(
+            [Parameter(Mandatory=$true)][string]$Name,
+            [Parameter(Mandatory=$false)][int]$TimeoutMinutes = 15,
+            [Parameter(Mandatory=$false)][int]$PollSeconds = 5
+        )
+        $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
+        do {
+            Start-Sleep -Seconds $PollSeconds
+            if (-not (Get-Process -Name $Name -ErrorAction SilentlyContinue)) { return $true }
+            Write-Verbose "$Name is still running"
+        } while ((Get-Date) -lt $deadline)
+        return $false
+    }
+
     Function Resolve-Client {
+        # Installs the client from the client share. Returns $true when the installation was started, or $false when it could not be,
+        # after logging the error and adding the reason to $Log.
         Param(
             [Parameter(Mandatory=$false)]$Xml,
             [Parameter(Mandatory=$true)]$ClientInstallProperties,
             [Parameter(Mandatory=$false)]$FirstInstall=$false,
             # Runs ccmsetup /uninstall before the install. Used when the client's local database is broken.
-            [Parameter(Mandatory=$false)]$Uninstall=$false
+            [Parameter(Mandatory=$false)]$Uninstall=$false,
+            [Parameter(Mandatory=$false)]$Log
             )
 
         $ClientShare = Get-XMLConfigClientShare
@@ -1571,43 +1616,33 @@ Begin {
                 Write-Verbose "Trigger ConfigMgr Client uninstallation using direct process invocation."
                 Start-Process -FilePath $ccmSetupPath -ArgumentList '/uninstall' -NoNewWindow | Out-Null
 
-				$launched = $true
-				do {
-					Start-Sleep -seconds 5
-					if (Get-Process "ccmsetup" -ErrorAction SilentlyContinue) {
-						Write-Verbose "ConfigMgr Client Uninstallation still running"
-						$launched = $true
-					}
-					else { $launched = $false }
-                } while ($launched -eq $true)
+                # Starting the install while the uninstall is still running would break both.
+                if ((Wait-ProcessExit -Name 'ccmsetup') -eq $false) {
+                    Write-HostAndLog -Text 'ERROR: ConfigMgr Client uninstallation was still running after 15 minutes. Skipping the reinstall.' -Severity 3
+                    if ($Log) { New-ClientInstalledReason -Log $Log -Message "Uninstall timed out." }
+                    return $false
+                }
             }
 
             Write-Verbose "Trigger ConfigMgr Client installation using direct process invocation."
             Write-Verbose "Client install string: $ccmSetupPath $ClientInstallProperties"
             Start-Process -FilePath $ccmSetupPath -ArgumentList $ClientInstallProperties -NoNewWindow | Out-Null
 
-			$launched = $true
-			do {
-				Start-Sleep -seconds 5
-				if (Get-Process "ccmsetup" -ErrorAction SilentlyContinue) {
-					Write-Verbose "ConfigMgr Client installation still running"
-					$launched = $true
-				}
-				else { $launched = $false }
-            } while ($launched -eq $true)
+            if ((Wait-ProcessExit -Name 'ccmsetup') -eq $false) {
+                Write-HostAndLog -Text 'ConfigMgr Client installation was still running after 15 minutes. Continuing without waiting for it.' -Severity 2
+            }
 
             if ($FirstInstall -eq $true) {
                 Write-Warning 'ConfigMgr Client was installed for the first time. Waiting 6 minutes for client to synchronize policy before proceeding.'
                 Start-Sleep -Seconds 360
             }
-
-
-
+            return $true
         }
         else {
             $text = 'ERROR: Client tagged for reinstall, but failed to access client installer: ' +$ccmSetupPath
-            Write-Error $text
-            Exit 1
+            Write-HostAndLog -Text $text -Severity 3
+            if ($Log) { New-ClientInstalledReason -Log $Log -Message "Client installer not reachable." }
+            return $false
         }
     }
 
@@ -3188,6 +3223,8 @@ Begin {
     $Reinstall = $false
     # The Process block creates the log object. The End block uses $null to detect that Process never ran.
     $Log = $null
+    # Set when a needed client install or reinstall could not be started. The End block then exits with code 1 after recording the results.
+    $ClientInstallFailed = $false
 
 
     # If config.xml is used
@@ -3291,7 +3328,12 @@ Process {
     }
 
     Write-Verbose 'Testing if ConfigMgr client is installed. Installing if not.'
-    Test-ConfigMgrClient -Log $Log
+    if ((Test-ConfigMgrClient -Log $Log) -eq $false) {
+        # The client needs an install or reinstall that could not be started, so the remaining client checks can't help.
+        # Skip them. The End block still records the results and then exits with code 1.
+        $ClientInstallFailed = $true
+        return
+    }
     # Test-ConfigMgrClient sets ClientInstalled when it installed or reinstalled the client, for example after a WMI repair.
     # Don't reinstall it a second time at the end of this run.
     if ($null -ne $Log.ClientInstalled) { $reinstall = $false }
@@ -3435,23 +3477,24 @@ Process {
     if (($reinstall -eq $true) -and ($null -ne $proc) ) { Write-Warning "ConfigMgr Client set to reinstall, but ccmsetup.exe is already running." }
     elseif (($Reinstall -eq $true) -and ($null -eq $proc)) {
         Write-Verbose 'Reinstalling ConfigMgr Client'
-        Resolve-Client -Xml $Xml -ClientInstallProperties $ClientInstallProperties
-        # Add smalldate timestamp in SQL for when client was installed by Client Health.
-        $log.ClientInstalled = Get-SmallDateTime
-        $Log.MaxLogSize = Get-ClientMaxLogSize
-        $Log.MaxLogHistory = Get-ClientMaxLogHistory
-        $log.CacheSize = Get-ClientCache
+        if ((Resolve-Client -Xml $Xml -ClientInstallProperties $ClientInstallProperties -Log $Log) -eq $true) {
+            # Add smalldate timestamp in SQL for when client was installed by Client Health.
+            $log.ClientInstalled = Get-SmallDateTime
+            $Log.MaxLogSize = Get-ClientMaxLogSize
+            $Log.MaxLogHistory = Get-ClientMaxLogHistory
+            $log.CacheSize = Get-ClientCache
 
-        # Verify that installed client version is now equal or better that minimum required client version
-        $NewClientVersion = Get-ClientVersion
-        $MinimumClientVersion = Get-XMLConfigClientVersion
+            # Verify that installed client version is now equal or better that minimum required client version
+            $NewClientVersion = Get-ClientVersion
+            $MinimumClientVersion = Get-XMLConfigClientVersion
 
-        if ( $NewClientVersion -lt $MinimumClientVersion) {
-            # ConfigMgr client version is still not at expected level.
-            # Log for now, remediation is comming
-            $Log.ClientInstalledReason += " Upgrade failed."
+            if ( $NewClientVersion -lt $MinimumClientVersion) {
+                # ConfigMgr client version is still not at expected level.
+                # Log for now, remediation is comming
+                $Log.ClientInstalledReason += " Upgrade failed."
+            }
         }
-
+        else { $ClientInstallFailed = $true }
     }
 
     # Get the latest client version in case it was reinstalled by the script
@@ -3497,4 +3540,7 @@ End {
         Update-Webservice -URI $Webservice -Log $Log
     }
     Write-Verbose "Client Health script finished"
+
+    # The results above include the reason. Exit with code 1 so the launcher also sees the failure.
+    if ($ClientInstallFailed -eq $true) { Exit 1 }
 }
