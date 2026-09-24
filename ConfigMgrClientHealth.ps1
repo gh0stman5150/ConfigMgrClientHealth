@@ -1819,7 +1819,8 @@ Begin {
             Write-HostAndLog -Text "Compliance States: OK."
         }
 
-        Set-RegistryValue -Path $RegistryKey -Name $RegValueName -Value $LastSent
+        # Saved in the sortable format so it reads back as the same date in every culture and PowerShell version.
+        Set-RegistryValue -Path $RegistryKey -Name $RegValueName -Value $LastSent.ToString('s')
         $Log.RefreshComplianceState = Get-SmallDateTime $LastSent
 
 
@@ -3458,9 +3459,9 @@ Process {
 End {
     # Update database and logfile with results
 
-    #Set the last run.
+    #Set the last run. Saved in the sortable format so it reads back as the same date in every culture and PowerShell version.
     $Date = Get-Date
-    Set-RegistryValue -Path $RegistryKey -Name $LastRunRegistryValueName -Value $Date
+    Set-RegistryValue -Path $RegistryKey -Name $LastRunRegistryValueName -Value $Date.ToString('s')
     Write-HostAndLog -Text "Setting last ran to $($Date)"
 
     if ($LocalLogging -like 'true') {

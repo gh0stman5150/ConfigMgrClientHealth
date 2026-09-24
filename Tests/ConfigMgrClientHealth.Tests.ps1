@@ -766,6 +766,49 @@ Describe 'Test-CCMCertificateError' {
     }
 }
 
+Describe 'Test-RefreshComplianceState' {
+    BeforeAll {
+        $sourceContent = Get-Content -Path $script:SourceFile -Raw
+        $pattern = '(?ms)^\s*Function\s+Test-RefreshComplianceState\s*\{.*?^\s*\}\s*(?=^\s*Function\s+|\z)'
+        $functionMatch = [regex]::Match($sourceContent, $pattern)
+        if (-not $functionMatch.Success) {
+            throw 'Unable to extract Test-RefreshComplianceState from ConfigMgrClientHealth.ps1'
+        }
+        $script:RefreshSource = $functionMatch.Value
+
+        function Get-RegistryValue { param($Path, $Name) }
+        function Set-RegistryValue { param($Path, $Name, $Value) }
+        function Get-SmallDateTime { param($Date) }
+        function Write-HostAndLog { param($Text, $ForegroundColor, $Severity) }
+    }
+
+    BeforeEach {
+        Invoke-Expression $script:RefreshSource
+        # A long interval and a non-zero random draw keep the last-sent date instead of resending.
+        Mock Get-Random { 1 }
+        Mock Set-RegistryValue { $script:SavedValue = $Value }
+        $script:SavedValue = $null
+    }
+
+    It 'saves the date in a culture-independent format that reads back as the same date' -TestCases @(
+        @{ Stored = '2026-09-05T14:30:00' }
+        @{ Stored = '09/05/2026 14:30:00' }
+    ) {
+        param($Stored)
+        Mock Get-RegistryValue { $Stored }
+        $culture = [System.Threading.Thread]::CurrentThread.CurrentCulture
+        try {
+            [System.Threading.Thread]::CurrentThread.CurrentCulture = 'de-DE'
+            Test-RefreshComplianceState -Days 100000 -RegistryKey 'HKLM:\Software\ConfigMgrClientHealth' -Log ([pscustomobject]@{ RefreshComplianceState = $null })
+        }
+        finally { [System.Threading.Thread]::CurrentThread.CurrentCulture = $culture }
+
+        $script:SavedValue | Should -BeOfType [string]
+        $script:SavedValue | Should -Be '2026-09-05T14:30:00'
+        ([datetime]$script:SavedValue) | Should -Be ([datetime]'2026-09-05T14:30:00')
+    }
+}
+
 Describe 'Function layout' {
     It 'declares every function so the test extractor can find it' {
         $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:SourceFile, [ref]$null, [ref]$null)
