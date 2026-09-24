@@ -1280,3 +1280,127 @@ Describe 'PowerShell 7 compatibility' {
         }
     }
 }
+
+Describe 'Test-ConfigMgrClient' {
+    BeforeAll {
+        $sourceContent = Get-Content -Path $script:SourceFile -Raw
+        $functionNames = @('Test-ConfigMgrClient', 'Get-CimOrWmiInstance', 'Remove-CimOrWmiInstance', 'New-ClientInstalledReason')
+        $script:ConfigMgrClientSource = foreach ($name in $functionNames) {
+            $pattern = "(?ms)^\s*Function\s+$([regex]::Escape($name))\s*\{.*?^\s*\}\s*(?=^\s*Function\s+|\z)"
+            $functionMatch = [regex]::Match($sourceContent, $pattern)
+            if (-not $functionMatch.Success) {
+                throw "Unable to extract $name from ConfigMgrClientHealth.ps1"
+            }
+            $functionMatch.Value
+        }
+
+        # Stubs shadow script functions and cmdlets that are missing or strictly typed in PowerShell 7.
+        function Remove-CimInstance { [CmdletBinding()] param([Parameter(ValueFromPipeline = $true)]$InputObject) }
+        function Write-HostAndLog { param($Text, $ForegroundColor, $Severity) }
+        function Out-LogFile { param($Xml, $Text, $Mode, $Severity) }
+        function Test-CcmSDF {}
+        function Test-CcmSQLCELog {}
+        function Get-XMLConfigCcmSQLCELog {}
+        function Test-CCMSetup1 {}
+        function Resolve-Client { param($Xml, $ClientInstallProperties, $FirstInstall) }
+        function Get-SmallDateTime {}
+
+        function New-ClientLog { [pscustomobject]@{ ClientInstalledReason = $null; ClientInstalled = $null } }
+    }
+
+    BeforeEach {
+        foreach ($source in $script:ConfigMgrClientSource) { Invoke-Expression $source }
+
+        $PowerShellVersion = 7
+        $script:ServiceStatus = 'Running'
+        $script:ServiceStartType = 'Automatic'
+        $script:ServiceInstalled = $true
+        $script:SdfPresent = $true
+        $script:SqlCeLogEnable = 'False'
+        $script:SqlCeCorrupt = $false
+        $script:WmiBroken = $false
+
+        Mock Get-Service {
+            if ($script:ServiceInstalled) { [pscustomobject]@{ Name = 'CcmExec'; Status = $script:ServiceStatus; StartType = $script:ServiceStartType } }
+        }
+        Mock Get-CimInstance -ParameterFilter { $ClassName -eq 'SMS_Client' } {
+            if ($script:WmiBroken) { throw 'Invalid namespace' }
+            [pscustomobject]@{ ClientVersion = '5.00.9012.1010' }
+        }
+        Mock Get-CimInstance -ParameterFilter { $ClassName -eq '__Namespace' } { [pscustomobject]@{ Name = 'CCM' } }
+        Mock Remove-CimInstance {}
+        Mock Write-HostAndLog {}
+        Mock Out-LogFile {}
+        Mock Test-CcmSDF { $script:SdfPresent }
+        Mock Test-CcmSQLCELog { $script:SqlCeCorrupt }
+        Mock Get-XMLConfigCcmSQLCELog { $script:SqlCeLogEnable }
+        Mock Test-CCMSetup1 {}
+        Mock Resolve-Client {}
+        Mock Get-SmallDateTime { '2026-01-15 08:30:00' }
+        Mock Set-Service {}
+        Mock Start-Service {}
+        Mock Start-Sleep {}
+    }
+
+    It 'leaves a healthy client alone' {
+        $log = New-ClientLog
+
+        Test-ConfigMgrClient -Log $log
+
+        Should -Invoke Write-HostAndLog -Times 1 -Exactly -ParameterFilter { $Text -eq 'Configuration Manager Client is installed' }
+        Should -Invoke Resolve-Client -Times 0 -Exactly
+        Should -Invoke Remove-CimInstance -Times 0 -Exactly
+        $log.ClientInstalledReason | Should -BeNullOrEmpty
+        $log.ClientInstalled | Should -BeNullOrEmpty
+    }
+
+    It 'reinstalls the client when its database files are missing' {
+        $script:SdfPresent = $false
+        $log = New-ClientLog
+
+        Test-ConfigMgrClient -Log $log
+
+        $log.ClientInstalledReason | Should -Be 'ConfigMgr Client database files missing.'
+        Should -Invoke Test-CCMSetup1 -Times 1 -Exactly
+        Should -Invoke Resolve-Client -Times 1 -Exactly -ParameterFilter { $FirstInstall -eq $false }
+        Should -Invoke Start-Sleep -Times 1 -Exactly
+        $log.ClientInstalled | Should -Be '2026-01-15 08:30:00'
+    }
+
+    It 'clears the CCM namespace and reinstalls when SMS_Client cannot be read' {
+        $script:WmiBroken = $true
+        $log = New-ClientLog
+
+        Test-ConfigMgrClient -Log $log
+
+        Should -Invoke Get-CimInstance -Times 1 -Exactly -ParameterFilter { $ClassName -eq '__Namespace' -and $Namespace -eq 'root' -and $Filter -eq "Name='CCM'" }
+        Should -Invoke Remove-CimInstance -Times 1 -Exactly
+        $log.ClientInstalledReason | Should -Be 'Failed to connect to SMS_Client WMI class.'
+        Should -Invoke Resolve-Client -Times 1 -Exactly -ParameterFilter { $FirstInstall -eq $false }
+    }
+
+    It 'records every reason when several checks fail' {
+        $script:SdfPresent = $false
+        $script:WmiBroken = $true
+        $log = New-ClientLog
+
+        Test-ConfigMgrClient -Log $log
+
+        $log.ClientInstalledReason | Should -Be 'ConfigMgr Client database files missing. Failed to connect to SMS_Client WMI class.'
+        Should -Invoke Resolve-Client -Times 1 -Exactly
+    }
+
+    It 'installs the client when the CcmExec service does not exist' {
+        $script:ServiceInstalled = $false
+        Mock Resolve-Client { $script:ServiceInstalled = $true }
+        $log = New-ClientLog
+
+        Test-ConfigMgrClient -Log $log
+
+        Should -Invoke Write-HostAndLog -Times 1 -Exactly -ParameterFilter { $Text -eq 'Configuration Manager client is not installed. Installing...' }
+        Should -Invoke Resolve-Client -Times 1 -Exactly -ParameterFilter { $FirstInstall -eq $true }
+        $log.ClientInstalledReason | Should -Be 'No agent found.'
+        $log.ClientInstalled | Should -Be '2026-01-15 08:30:00'
+        Should -Invoke Out-LogFile -Times 0 -Exactly
+    }
+}
