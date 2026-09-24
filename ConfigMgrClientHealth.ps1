@@ -923,11 +923,9 @@ Begin {
         if ($startCount -ge $maxHistory) { Remove-Item $logfile -Force }
     }
 
-    Function Test-DNSConfiguration {
-        Param([Parameter(Mandatory=$true)]$Log)
+    Function Get-DNSHostRecord {
+        # Returns the local FQDN, the host name DNS returns for it, and the IP addresses DNS publishes for it.
         $fqdn = [System.Net.Dns]::GetHostEntry([string]"localhost").HostName
-        if ($PowerShellVersion -ge 6) { $localIPs = Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object {$_.IPEnabled -Match "True"} |  Select-Object -ExpandProperty IPAddress }
-        else { $localIPs = Get-WmiObject Win32_NetworkAdapterConfiguration | Where-Object {$_.IPEnabled -Match "True"} |  Select-Object -ExpandProperty IPAddress }
         $dnscheck = [System.Net.DNS]::GetHostByName($fqdn)
 
         $OSName = Get-OperatingSystem
@@ -953,39 +951,61 @@ Begin {
             $dnsAddressList = $dnsAddressList -replace("%(.*)", "")
         }
 
+        [pscustomobject]@{ Fqdn = $fqdn; HostName = $dnscheck.HostName; AddressList = $dnsAddressList }
+    }
+
+    Function Compare-DNSRecord {
+        # Compares a record from Get-DNSHostRecord with the local IP addresses.
+        # Match is $false when DNS returns another host name or publishes an IP address this computer does not have.
+        Param(
+            [Parameter(Mandatory=$true)]$Record,
+            [Parameter(Mandatory=$false)]$LocalIPs
+        )
         $dnsFail = ''
         $logFail = ''
 
         Write-Verbose 'Verify that local machines FQDN matches DNS'
-        if ($dnscheck.HostName -like $fqdn) {
-            $obj = $true
+        if ($Record.HostName -like $Record.Fqdn) {
+            $match = $true
             Write-Verbose 'Checking if one local IP matches on IP from DNS'
-            Write-Verbose 'Loop through each IP address published in DNS'
-            foreach ($dnsIP in $dnsAddressList) {
-                ##if ($dnsIP -notin $localIPs) { ## Requires PowerShell 3. Works fine :(
-                if ($localIPs -notcontains $dnsIP) {
+            foreach ($dnsIP in $Record.AddressList) {
+                if ($LocalIPs -notcontains $dnsIP) {
                    $dnsFail += "IP '$dnsIP' in DNS record do not exist locally`n"
                    $logFail += "$dnsIP "
-                   $obj = $false
+                   $match = $false
                 }
             }
         }
         else {
-            $hn = $dnscheck.HostName
-            $dnsFail = 'DNS name: ' +$hn + ' local fqdn: ' +$fqdn + ' DNS IPs: ' +$dnsAddressList + ' Local IPs: ' + $localIPs
-            $obj = $false
+            $dnsFail = 'DNS name: ' + $Record.HostName + ' local fqdn: ' + $Record.Fqdn + ' DNS IPs: ' + $Record.AddressList + ' Local IPs: ' + $LocalIPs
+            $match = $false
             Write-Host $dnsFail
         }
 
+        [pscustomobject]@{ Match = $match; DnsFail = $dnsFail; LogFail = $logFail }
+    }
+
+    Function Repair-DNSRegistration {
+        # Registers this computer's IP addresses with its DNS server.
+        if ($PowerShellVersion -ge 4) { Register-DnsClient | Out-Null }
+        else { ipconfig /registerdns | Out-Null }
+    }
+
+    Function Test-DNSConfiguration {
+        # Checks that DNS resolves this computer's FQDN to its own IP addresses, and re-registers with DNS when the DNSCheck Fix option is on.
+        Param([Parameter(Mandatory=$true)]$Log)
+        $localIPs = Get-CimOrWmiInstance Win32_NetworkAdapterConfiguration -Filter "IPEnabled=True" -Property IPAddress | Select-Object -ExpandProperty IPAddress
+        $result = Compare-DNSRecord -Record (Get-DNSHostRecord) -LocalIPs $localIPs
+        $dnsFail = $result.DnsFail
+        $logFail = $result.LogFail
+
         $FileLogLevel = ((Get-XMLConfigLoggingLevel).ToString()).ToLower()
 
-        switch ($obj) {
+        switch ($result.Match) {
             $false {
-                $fix = (Get-XMLConfigDNSFix).ToLower()
-                if ($fix -eq "true") {
+                if ((Get-XMLConfigDNSFix) -like 'True') {
                     $text = 'DNS Check: FAILED. IP address published in DNS do not match IP address on local machine. Trying to resolve by registerting with DNS server'
-                    if ($PowerShellVersion -ge 4) { Register-DnsClient | out-null  }
-                    else { ipconfig /registerdns | out-null }
+                    Repair-DNSRegistration
                     Write-Host $text
                     $log.DNS = $logFail
                     if (-NOT($FileLogLevel -like "clientlocal")) {
@@ -1010,9 +1030,9 @@ Begin {
         }
     }
 
-    # Function to test that 'HKU:\S-1-5-18\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders\' is set to '%USERPROFILE%\AppData\Roaming'. CCMSETUP will fail if not.
-    # Reference: https://www.systemcenterdudes.com/could-not-access-network-location-appdata-ccmsetup-log/
     Function Test-CCMSetup1 {
+        # Tests that 'HKU:\S-1-5-18\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders\' is set to '%USERPROFILE%\AppData\Roaming'. CCMSETUP will fail if not.
+        # Reference: https://www.systemcenterdudes.com/could-not-access-network-location-appdata-ccmsetup-log/
         New-PSDrive -PSProvider Registry -Name HKU -Root HKEY_USERS -ErrorAction SilentlyContinue | Out-Null
         $correctValue = '%USERPROFILE%\AppData\Roaming'
         $currentValue = (Get-Item 'HKU:\S-1-5-18\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders\').GetValue('AppData', $null, 'DoNotExpandEnvironmentNames')
@@ -1094,93 +1114,109 @@ Begin {
         }
     }
 
+    Function Test-ClientDatabase {
+        # Returns $true when the client's local database files are missing or, when the CcmSQLCELog check is enabled, corrupt.
+        Param([Parameter(Mandatory=$true)]$Log)
+        $obj = $false
+
+        # Less than 7 database files means the client is badly broken and requires a reinstall.
+        if ((Test-CcmSDF) -eq $False) {
+            New-ClientInstalledReason -Log $Log -Message "ConfigMgr Client database files missing."
+            Write-HostAndLog -Text "ConfigMgr Client database files missing. Reinstalling..."
+            $obj = $true
+        }
+
+        if ((Get-XMLConfigCcmSQLCELog) -like 'True') {
+            Write-HostAndLog -Text "Testing CcmSQLCELog"
+            if ((Test-CcmSQLCELog) -eq $true) {
+                New-ClientInstalledReason -Log $Log -Message "ConfigMgr Client database corrupt."
+                Write-HostAndLog -Text "ConfigMgr Client database corrupt. Reinstalling..."
+                $obj = $true
+            }
+        }
+        Write-Output $obj
+    }
+
+    Function Start-ClientService {
+        # Starts a stopped CcmExec service. Returns $true when it could not be started and the client needs a reinstall.
+        Param([Parameter(Mandatory=$true)]$Log)
+        $obj = $false
+        $CCMService = Get-Service -Name ccmexec -ErrorAction SilentlyContinue
+
+        if ($CCMService.Status -eq "Stopped") {
+            try {
+                Write-HostAndLog -Text "ConfigMgr Agent not running. Attempting to start it."
+                if ($CCMService.StartType -ne "Automatic") {
+                    Write-HostAndLog -Text "Configuring service CcmExec StartupType to: Automatic (Delayed Start)..."
+                    Set-Service -Name CcmExec -StartupType Automatic -ErrorAction Stop
+                }
+                Start-Service -Name CcmExec -ErrorAction Stop
+            }
+            catch {
+                New-ClientInstalledReason -Log $Log -Message "Service not running, failed to start."
+                $obj = $true
+            }
+        }
+        Write-Output $obj
+    }
+
+    Function Test-ClientWMIConnection {
+        # Returns $true when the SMS_Client WMI class cannot be read. Clears the root\CCM namespace first so the reinstall does not need an uninstall.
+        Param([Parameter(Mandatory=$true)]$Log)
+        try {
+            Get-CimOrWmiInstance SMS_Client -Namespace root/ccm -ErrorAction Stop | Out-Null
+            $obj = $false
+        }
+        catch {
+            Write-Verbose 'Failed to connect to WMI namespace "root/ccm" class "SMS_Client". Clearing WMI and tagging client for reinstall to fix.'
+            # This is the same action the install after an uninstall would perform
+            Get-CimOrWmiInstance __Namespace -Namespace root -Filter "Name='CCM'" | Remove-CimOrWmiInstance
+            New-ClientInstalledReason -Log $Log -Message "Failed to connect to SMS_Client WMI class."
+            $obj = $true
+        }
+        Write-Output $obj
+    }
+
+    Function Repair-ConfigMgrClient {
+        # Reinstalls a broken client, then waits 10 minutes for the installation to finish.
+        Param([Parameter(Mandatory=$true)]$Log)
+        Write-HostAndLog -Text "ConfigMgr Client Health thinks the agent need to be reinstalled.."
+        # Lets check that registry settings are OK before we try a new installation.
+        Test-CCMSetup1
+
+        Resolve-Client -Xml $xml -ClientInstallProperties $clientInstallProperties -FirstInstall $false
+        $Log.ClientInstalled = Get-SmallDateTime
+        Start-Sleep 600
+    }
+
+    Function Install-ConfigMgrClient {
+        # Installs the client when CcmExec is missing, and writes a failure to the share log if the agent still is not found.
+        Param([Parameter(Mandatory=$true)]$Log)
+        Write-HostAndLog -Text "Configuration Manager client is not installed. Installing..."
+        Resolve-Client -Xml $xml -ClientInstallProperties $clientInstallProperties -FirstInstall $true
+        New-ClientInstalledReason -Log $Log -Message "No agent found."
+        $Log.ClientInstalled = Get-SmallDateTime
+
+        if (-not (Get-Service -Name ccmexec -ErrorAction SilentlyContinue)) {
+            Out-LogFile -Xml $xml -Text "ConfigMgr Client installation failed. Agent not detected 10 minutes after triggering installation." -Mode "ClientInstall" -Severity 3
+        }
+    }
+
     Function Test-ConfigMgrClient {
+        # Installs the client when the CcmExec service is missing. Otherwise runs the health checks and reinstalls the client if any of them fail.
         Param([Parameter(Mandatory=$true)]$Log)
 
-        # Check if the SCCM Agent is installed or not.
-        # If installed, perform tests to decide if reinstall is needed or not.
         if (Get-Service -Name ccmexec -ErrorAction SilentlyContinue) {
-            $text = "Configuration Manager Client is installed"
-            Write-HostAndLog -Text $text
+            Write-HostAndLog -Text "Configuration Manager Client is installed"
 
-            # Lets not reinstall client unless tests tells us to.
-            $Reinstall = $false
+            $Reinstall = Test-ClientDatabase -Log $Log
+            # Skip the start when a database check already requires a reinstall.
+            if ($Reinstall -eq $false) { $Reinstall = Start-ClientService -Log $Log }
+            if ((Test-ClientWMIConnection -Log $Log) -eq $true) { $Reinstall = $true }
 
-            # We test that the local database files exists. Less than 7 means the client is horrible broken and requires reinstall.
-            $LocalDBFilesPresent = Test-CcmSDF
-            if ($LocalDBFilesPresent -eq $False) {
-                    New-ClientInstalledReason -Log $Log -Message "ConfigMgr Client database files missing."
-                    Write-HostAndLog -Text "ConfigMgr Client database files missing. Reinstalling..."
-                    $Reinstall = $true
-            }
-
-            # Only test CM client local DB if this check is enabled
-            if ((Get-XMLConfigCcmSQLCELog) -like 'True') {
-                Write-HostAndLog -Text "Testing CcmSQLCELog"
-                $LocalDB = Test-CcmSQLCELog
-                if ($LocalDB -eq $true) {
-                    # LocalDB is messed up
-                    New-ClientInstalledReason -Log $Log -Message "ConfigMgr Client database corrupt."
-                    Write-HostAndLog -Text "ConfigMgr Client database corrupt. Reinstalling..."
-                    $Reinstall = $true
-                }
-            }
-
-            $CCMService = Get-Service -Name ccmexec -ErrorAction SilentlyContinue
-
-            # Reinstall if we are unable to start the CM client. Skip the start when a database check already requires a reinstall.
-            if (($CCMService.Status -eq "Stopped") -and ($Reinstall -eq $false)) {
-                try {
-                    Write-HostAndLog -Text "ConfigMgr Agent not running. Attempting to start it."
-                    if ($CCMService.StartType -ne "Automatic") {
-                        $text = "Configuring service CcmExec StartupType to: Automatic (Delayed Start)..."
-                        Write-Output $text
-                        Set-Service -Name CcmExec -StartupType Automatic -ErrorAction Stop
-                    }
-                    Start-Service -Name CcmExec -ErrorAction Stop
-                }
-                catch {
-                    $Reinstall = $true
-                    New-ClientInstalledReason -Log $Log -Message "Service not running, failed to start."
-                }
-            }
-
-            # Test that we are able to connect to SMS_Client WMI class
-            Try {
-                $WMI = Get-CimOrWmiInstance SMS_Client -Namespace root/ccm -ErrorAction Stop
-            } Catch {
-                Write-Verbose 'Failed to connect to WMI namespace "root/ccm" class "SMS_Client". Clearing WMI and tagging client for reinstall to fix.'
-
-                # Clear the WMI namespace to avoid having to uninstall first
-                # This is the same action the install after an uninstall would perform
-                Get-CimOrWmiInstance __Namespace -Namespace root -Filter "Name='CCM'" | Remove-CimOrWmiInstance
-
-                $Reinstall = $true
-                New-ClientInstalledReason -Log $Log -Message "Failed to connect to SMS_Client WMI class."
-            }
-
-            if ( $reinstall -eq $true) {
-                $text = "ConfigMgr Client Health thinks the agent need to be reinstalled.."
-                Write-HostAndLog -Text $text
-                # Lets check that registry settings are OK before we try a new installation.
-                Test-CCMSetup1
-
-                Resolve-Client -Xml $xml -ClientInstallProperties $clientInstallProperties -FirstInstall $false
-                $log.ClientInstalled = Get-SmallDateTime
-                Start-Sleep 600
-            }
+            if ($Reinstall -eq $true) { Repair-ConfigMgrClient -Log $Log }
         }
-        else {
-            $text = "Configuration Manager client is not installed. Installing..."
-            Write-HostAndLog -Text $text
-            Resolve-Client -Xml $xml -ClientInstallProperties $clientInstallProperties -FirstInstall $true
-            New-ClientInstalledReason -Log $Log -Message "No agent found."
-            $log.ClientInstalled = Get-SmallDateTime
-
-            # Test again if agent is installed
-            if (Get-Service -Name ccmexec -ErrorAction SilentlyContinue) {}
-            else { Out-LogFile -Xml $xml -Text "ConfigMgr Client installation failed. Agent not detected 10 minutes after triggering installation." -Mode "ClientInstall" -Severity 3 }
-        }
+        else { Install-ConfigMgrClient -Log $Log }
     }
 
     Function Test-ClientCacheSize {

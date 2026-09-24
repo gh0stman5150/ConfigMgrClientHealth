@@ -1284,7 +1284,10 @@ Describe 'PowerShell 7 compatibility' {
 Describe 'Test-ConfigMgrClient' {
     BeforeAll {
         $sourceContent = Get-Content -Path $script:SourceFile -Raw
-        $functionNames = @('Test-ConfigMgrClient', 'Get-CimOrWmiInstance', 'Remove-CimOrWmiInstance', 'New-ClientInstalledReason')
+        $functionNames = @(
+            'Test-ConfigMgrClient', 'Test-ClientDatabase', 'Start-ClientService', 'Test-ClientWMIConnection', 'Repair-ConfigMgrClient',
+            'Install-ConfigMgrClient', 'Get-CimOrWmiInstance', 'Remove-CimOrWmiInstance', 'New-ClientInstalledReason'
+        )
         $script:ConfigMgrClientSource = foreach ($name in $functionNames) {
             $pattern = "(?ms)^\s*Function\s+$([regex]::Escape($name))\s*\{.*?^\s*\}\s*(?=^\s*Function\s+|\z)"
             $functionMatch = [regex]::Match($sourceContent, $pattern)
@@ -1470,5 +1473,111 @@ Describe 'Test-ConfigMgrClient' {
 
         $log.ClientInstalledReason | Should -Be 'Service not running, failed to start.'
         Should -Invoke Resolve-Client -Times 1 -Exactly -ParameterFilter { $FirstInstall -eq $false }
+    }
+}
+
+Describe 'Test-DNSConfiguration' {
+    BeforeAll {
+        $sourceContent = Get-Content -Path $script:SourceFile -Raw
+        $functionNames = @('Test-DNSConfiguration', 'Compare-DNSRecord', 'Repair-DNSRegistration', 'Get-CimOrWmiInstance')
+        $script:DnsSource = foreach ($name in $functionNames) {
+            $pattern = "(?ms)^\s*Function\s+$([regex]::Escape($name))\s*\{.*?^\s*\}\s*(?=^\s*Function\s+|\z)"
+            $functionMatch = [regex]::Match($sourceContent, $pattern)
+            if (-not $functionMatch.Success) {
+                throw "Unable to extract $name from ConfigMgrClientHealth.ps1"
+            }
+            $functionMatch.Value
+        }
+
+        # Get-DNSHostRecord wraps the [System.Net.Dns] lookups, so the tests replace it instead of querying the host's DNS.
+        function Get-DNSHostRecord {}
+        function Get-XMLConfigLoggingLevel {}
+        function Get-XMLConfigDNSFix {}
+        function Out-LogFile { param([xml]$Xml, $Text, $Mode, $Severity) }
+        function Register-DnsClient {}
+        function ipconfig {}
+    }
+
+    BeforeEach {
+        foreach ($source in $script:DnsSource) { Invoke-Expression $source }
+
+        $PowerShellVersion = 7
+        $script:DnsFix = 'True'
+        $script:Record = [pscustomobject]@{ Fqdn = 'pc01.contoso.com'; HostName = 'pc01.contoso.com'; AddressList = @('10.0.0.5') }
+
+        Mock Get-DNSHostRecord { $script:Record }
+        Mock Get-CimInstance { [pscustomobject]@{ IPAddress = @('10.0.0.5', 'fe80::1') } }
+        Mock Get-XMLConfigLoggingLevel { 'Full' }
+        Mock Get-XMLConfigDNSFix { $script:DnsFix }
+        Mock Out-LogFile {}
+        Mock Register-DnsClient {}
+        Mock ipconfig {}
+        Mock Write-Host {}
+    }
+
+    It 'reports OK when DNS publishes only local IP addresses' {
+        $log = [pscustomobject]@{ DNS = $null }
+
+        $output = Test-DNSConfiguration -Log $log
+
+        $output | Should -Be 'DNS Check: OK'
+        $log.DNS | Should -Be 'OK'
+        Should -Invoke Register-DnsClient -Times 0 -Exactly
+        Should -Invoke Get-CimInstance -Times 1 -Exactly -ParameterFilter {
+            $ClassName -eq 'Win32_NetworkAdapterConfiguration' -and $Filter -eq 'IPEnabled=True' -and ($Property -join ',') -eq 'IPAddress'
+        }
+    }
+
+    It 're-registers with DNS when DNS publishes an IP address the computer does not have' {
+        $script:Record.AddressList = @('10.0.0.5', '10.0.0.9')
+        $log = [pscustomobject]@{ DNS = $null }
+
+        Test-DNSConfiguration -Log $log
+
+        $log.DNS | Should -Be '10.0.0.9 '
+        Should -Invoke Register-DnsClient -Times 1 -Exactly
+        Should -Invoke Out-LogFile -Times 1 -Exactly -ParameterFilter { $Text -like '*Trying to resolve by registerting with DNS server' -and $Severity -eq 2 }
+        Should -Invoke Out-LogFile -Times 1 -Exactly -ParameterFilter { $Text -eq "IP '10.0.0.9' in DNS record do not exist locally`n" -and $Severity -eq 2 }
+    }
+
+    It 'uses ipconfig to re-register on PowerShell 3' {
+        $PowerShellVersion = 3
+        $script:Record.AddressList = @('10.0.0.9')
+
+        Test-DNSConfiguration -Log ([pscustomobject]@{ DNS = $null })
+
+        Should -Invoke ipconfig -Times 1 -Exactly
+        Should -Invoke Register-DnsClient -Times 0 -Exactly
+    }
+
+    It 'only reports the mismatch in monitor mode' {
+        $script:DnsFix = 'False'
+        $script:Record.AddressList = @('10.0.0.9')
+        $log = [pscustomobject]@{ DNS = $null }
+
+        Test-DNSConfiguration -Log $log
+
+        $log.DNS | Should -Be '10.0.0.9 '
+        Should -Invoke Register-DnsClient -Times 0 -Exactly
+        Should -Invoke Out-LogFile -Times 1 -Exactly -ParameterFilter { $Text -like '*Monitor mode only, no remediation' }
+    }
+
+    It 'fails the check when DNS returns another host name' {
+        $script:Record.HostName = 'pc02.contoso.com'
+
+        $result = Compare-DNSRecord -Record $script:Record -LocalIPs @('10.0.0.5')
+
+        $result.Match | Should -BeFalse
+        $result.DnsFail | Should -Be 'DNS name: pc02.contoso.com local fqdn: pc01.contoso.com DNS IPs: 10.0.0.5 Local IPs: 10.0.0.5'
+        $result.LogFail | Should -Be ''
+    }
+
+    It 'lists every DNS address that is not local' {
+        $script:Record.AddressList = @('10.0.0.8', '10.0.0.5', '10.0.0.9')
+
+        $result = Compare-DNSRecord -Record $script:Record -LocalIPs @('10.0.0.5')
+
+        $result.Match | Should -BeFalse
+        $result.LogFail | Should -Be '10.0.0.8 10.0.0.9 '
     }
 }
