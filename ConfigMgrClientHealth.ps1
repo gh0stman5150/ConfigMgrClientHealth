@@ -465,27 +465,6 @@ Begin {
         Write-Output $osName
     }
 
-    Function Get-MissingUpdates {
-        $UpdateShare = Get-XMLConfigUpdatesShare
-        $OSName = Get-OperatingSystemDisplayName
-
-        $Updates = $UpdateShare + "\" + $OSName + "\"
-        $obj = New-Object PSObject @{}
-        If ((Test-Path $Updates) -eq $true) {
-            $regex = "\b(?!(KB)+(\d+)\b)\w+"
-            $hotfixes = (Get-ChildItem $Updates | Select-Object -ExpandProperty Name)
-            if ($PowerShellVersion -ge 6) { $installedUpdates = (Get-CimInstance -ClassName Win32_QuickFixEngineering).HotFixID }
-            else { $installedUpdates = Get-Hotfix | Select-Object -ExpandProperty HotFixID }
-
-            foreach ($hotfix in $hotfixes) {
-                $kb = $hotfix -replace $regex -replace "\." -replace "-"
-                if ($installedUpdates -like $kb) {}
-                else { $obj.Add('Hotfix', $hotfix) }
-            }
-        }
-        Write-Output $obj
-    }
-
     Function Get-RegistryValue {
         param (
             [parameter(Mandatory=$true)][ValidateNotNullOrEmpty()]$Path,
@@ -840,31 +819,10 @@ Begin {
         Write-Output $obj
     }
 
-    Function Get-ProvisioningMode {
-        $registryPath = 'HKLM:\SOFTWARE\Microsoft\CCM\CcmExec'
-        $provisioningMode = (Get-ItemProperty -Path $registryPath).ProvisioningMode
-        if ($provisioningMode -eq 'true') { $obj = $true }
-        else { $obj = $false }
-        Write-Output $obj
-    }
-
     Function Get-OSDiskFreeSpace {
         $driveC = Get-CimOrWmiInstance Win32_LogicalDisk -Filter "DeviceID='$env:SystemDrive'" -Property FreeSpace, Size
         $freeSpace = (($driveC.FreeSpace / $driveC.Size) * 100)
         Write-Output ([math]::Round($freeSpace,2))
-    }
-
-    Function Get-Computername {
-        if ($PowerShellVersion -ge 6) { $obj = (Get-CimInstance Win32_ComputerSystem).Name }
-        else { $obj = (Get-WmiObject Win32_ComputerSystem).Name }
-        Write-Output $obj
-    }
-
-    Function Get-LastBootTime {
-        if ($PowerShellVersion -ge 6) { $wmi = Get-CimInstance Win32_OperatingSystem }
-        else { $wmi = Get-WmiObject Win32_OperatingSystem }
-        $obj = $wmi.ConvertToDateTime($wmi.LastBootUpTime)
-        Write-Output $obj
     }
 
     Function Get-LastInstalledPatches {
@@ -1839,14 +1797,6 @@ Begin {
 
     }
 
-    # Start ConfigMgr Agent if not already running
-    Function Test-SCCMService {
-        if ($service.Status -ne 'Running') {
-            try {Start-Service -Name CcmExec | Out-Null}
-            catch {}
-        }
-    }
-
     Function Test-SMSTSMgr {
         $service = get-service smstsmgr
         if (($service.ServicesDependedOn).name -contains "ccmexec") {
@@ -2169,11 +2119,6 @@ Begin {
     }
 
 
-    Function Test-CCMSoftwareDistribution {
-        # TODO Implement this function
-        Get-WmiObject -Class CCM_SoftwareDistributionClientConfig
-    }
-
     Function Get-UBR {
         $UBR = (Get-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows NT\CurrentVersion').UBR
         Write-Output $UBR
@@ -2272,19 +2217,6 @@ Begin {
         }
     }
 
-    # Function to store SCCM log file changes to be processed
-    Function New-SCCMLogFileJob {
-        Param(
-            [Parameter(Mandatory=$true)]$Logfile,
-            [Parameter(Mandatory=$true)]$Text,
-            [Parameter(Mandatory=$true)]$SCCMLogJobs
-        )
-
-        $path = Get-CCMLogDirectory
-        $file = "$path\$LogFile"
-        $SCCMLogJobs.Rows.Add($file, $text)
-    }
-
     # Function to remove info in SCCM logfiles after remediation. This to prevent false positives triggering remediation next time script runs
     Function Update-SCCMLogFile {
         Param([Parameter(Mandatory=$true)]$SCCMLogJobs)
@@ -2330,41 +2262,6 @@ Begin {
         Write-Verbose "End Test-SCCMHardwareInventoryScan"
     }
 
-    # TODO: Implement so result of this remediation is stored in WMI log object, next to result of previous WMI check. This do not require db or webservice update
-    # ref: https://social.technet.microsoft.com/Forums/de-DE/1f48e8d8-4e13-47b5-ae1b-dcb831c0a93b/setup-was-unable-to-compile-the-file-discoverystatusmof-the-error-code-is-8004100e?forum=configmanagerdeployment
-    Function Test-PolicyPlatform {
-        Param([Parameter(Mandatory=$true)]$Log)
-        try {
-            if (Get-WmiObject -Namespace 'root/Microsoft' -Class '__Namespace' -Filter 'Name = "PolicyPlatform"') { Write-HostAndLog -Text "PolicyPlatform: OK" }
-            else {
-                Write-Warning "PolicyPlatform: Not found, recompiling WMI 'Microsoft Policy Platform\ExtendedStatus.mof'"
-
-                if ($PowerShellVersion -ge 6) { $OS = Get-CimInstance Win32_OperatingSystem }
-                else { $OS = Get-WmiObject Win32_OperatingSystem }
-
-                # 32 or 64?
-                if ($OS.OSArchitecture -match '64') { & mofcomp "$env:ProgramW6432\Microsoft Policy Platform\ExtendedStatus.mof" }
-                else { &  mofcomp "$env:ProgramFiles\Microsoft Policy Platform\ExtendedStatus.mof" }
-
-                # Update WMI log object
-                $text = 'PolicyPlatform Recompiled.'
-                if (-NOT($Log.WMI -eq 'OK')) { $Log.WMI += ". $text" }
-                else { $Log.WMI = $text }
-            }
-        }
-        catch { Write-Warning "PolicyPlatform: RecompilePolicyPlatform failed!" }
-    }
-
-
-    # Get the clients SiteName in Active Directory
-    Function Get-ClientSiteName {
-        try {
-            if ($PowerShellVersion -ge 6) { $obj = (Get-CimInstance Win32_NTDomain).ClientSiteName }
-            else { $obj = (Get-WmiObject Win32_NTDomain).ClientSiteName }
-        }
-        catch {$obj = $false}
-        finally { if ($obj -ne $false) { Write-Output ($obj | Select-Object -First 1) } }
-    }
 
     Function Test-SoftwareMeteringPrepDriver {
         Param([Parameter(Mandatory=$true)]$Log)
@@ -2419,10 +2316,6 @@ Begin {
         Write-Verbose "End Test-SoftwareMeteringPrepDriver"
     }
 
-    Function Test-SCCMHWScanErrors {
-        # Function to test and fix errors that prevent a computer to perform a HW scan. Not sure if this is really needed or not.
-    }
-
     # SCCM Client evaluation policies
     Function Invoke-ClientSchedule {
         # Triggers a ConfigMgr client schedule by ID. Errors are ignored because callers only nudge the client.
@@ -2449,12 +2342,6 @@ Begin {
 
     Function Get-SCCMPolicyMachineEvaluation {
         Invoke-ClientSchedule -ScheduleId '{00000000-0000-0000-0000-000000000022}'
-    }
-
-    Function Get-Version {
-        $text = 'ConfigMgr Client Health Version ' +$Version
-        Write-Output $text
-        Out-LogFile -Xml $xml -Text $text -Severity 1
     }
 
     <# Trigger codes
@@ -3023,34 +2910,6 @@ Begin {
 
 
     # End Getters - XML config file
-
-    Function GetComputerInfo {
-        $info = Get-Info | Select-Object HostName, OperatingSystem, Architecture, Build, InstallDate, Manufacturer, Model, LastLoggedOnUser
-        $text = 'Hostname: ' +$info.HostName
-        Write-Output $text
-        #Out-LogFile -Xml $xml $text
-        $text = 'Operatingsystem: ' +$info.OperatingSystem
-        Write-Output $text
-        #Out-LogFile -Xml $xml $text
-        $text = 'Architecture: ' + $info.Architecture
-        Write-Output $text
-        #Out-LogFile -Xml $xml $text
-        $text = 'Build: ' + $info.Build
-        Write-Output $text
-        #Out-LogFile -Xml $xml $text
-        $text = 'Manufacturer: ' + $info.Manufacturer
-        Write-Output $text
-        #Out-LogFile -Xml $xml $text
-        $text = 'Model: ' + $info.Model
-        Write-Output $text
-        #Out-LogFile -Xml $xml $text
-        $text = 'InstallDate: ' + $info.InstallDate
-        Write-Output $text
-        #Out-LogFile -Xml $xml $text
-        $text = 'LastLoggedOnUser: ' + $info.LastLoggedOnUser
-        Write-Output $text
-        #Out-LogFile -Xml $xml $text
-    }
 
     Function Test-ConfigMgrHealthLogging {
         # Verifies that logfiles are not bigger than max history
