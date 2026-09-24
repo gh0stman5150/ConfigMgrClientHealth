@@ -1,6 +1,6 @@
 Write or update focused Pester regression tests for the requested ConfigMgrClientHealth behavior.
 
-1. Read [repository guidance](../copilot-instructions.md), [Pester standards](../instructions/powershell-pester-5.instructions.md),
+1. Read [repository guidance](../copilot-instructions.md), [Pester standards](../instructions/powershell-pester.instructions.md),
    and [the existing test suite](../../Tests/ConfigMgrClientHealth.Tests.ps1).
 2. Inspect the affected production functions and their XML-controlled defaults.
 3. Load isolated functions; never dot-source or execute the whole remediation script.

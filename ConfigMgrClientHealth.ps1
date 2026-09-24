@@ -182,7 +182,6 @@ Begin {
             )
 
         $URI = $URI + "/ConfigurationProfile"
-        #Write-Host "ProfileID = $ProfileID"
         if ($ProfileID -ge 0) { $URI = $URI + "/$ProfileID"}
 
         Write-Verbose "Retrieving configuration from webservice. URI: $URI"
@@ -254,10 +253,7 @@ Begin {
     }
 
     Function Get-LogFileName {
-        #$OS = Get-WmiObject -class Win32_OperatingSystem
-        #$OSName = Get-OperatingSystem
         $logshare = Get-XMLConfigLoggingShare
-        #$obj = "$logshare\$OSName\$env:computername.log"
         $obj = "$logshare\$env:computername.log"
         Write-Output $obj
     }
@@ -381,7 +377,6 @@ Begin {
 
             $item + $logblock | Out-File -Encoding utf8 -Append $logFile
         }
-        # $obj | Out-File -Encoding utf8 -Append $logFile
     }
 
     Function Get-OperatingSystem {
@@ -509,8 +504,6 @@ Begin {
     Function Get-ClientCache {
         try {
             $obj = (New-Object -ComObject UIResource.UIResourceMgr).GetCacheInfo().TotalSize
-            #if ($PowerShellVersion -ge 6) { $obj = (Get-CimInstance -Namespace "ROOT\CCM\SoftMgmtAgent" -Class CacheConfig -ErrorAction SilentlyContinue).Size }
-            #else { $obj = (Get-WmiObject -Namespace "ROOT\CCM\SoftMgmtAgent" -Class CacheConfig -ErrorAction SilentlyContinue).Size }
         }
         catch { $obj = 0}
         finally {
@@ -664,7 +657,6 @@ Begin {
             $log.ClientCertificate = $error1
         }
 
-        #$content = Get-Content -Path $logFile2
         if ($content -match $error2) {
             $ok = $false
             $text = 'ConfigMgr Client Certificate: Error! Server rejected client registration. Client Certificate not valid. No auto-remediation.'
@@ -761,7 +753,6 @@ Begin {
 			$Obj = $false
 		}
 		Write-Host $text
-		#Write-Output $Obj
     }
 
     Function New-ClientInstalledReason {
@@ -809,7 +800,6 @@ Begin {
 
         #Return Reboot required
         if ($result.ContainsValue($true)) {
-            #$text = 'Pending Reboot: YES'
             $obj = $true
             $log.PendingReboot = 'Pending Reboot'
         }
@@ -896,10 +886,6 @@ Begin {
 		}
 
         # Reading date from PowerShell Get-Hotfix
-        #$now = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-        #$Hotfix = Get-Hotfix | Where-Object {$_.InstalledOn -le $now} | Select-Object -ExpandProperty InstalledOn -ErrorAction SilentlyContinue
-
-        #$Hotfix = Get-Hotfix | Select-Object -ExpandProperty InstalledOn -ErrorAction SilentlyContinue
 
         if ($PowerShellVersion -ge 6) { $Hotfix = Get-CimInstance -ClassName Win32_QuickFixEngineering | Select-Object @{Name="InstalledOn";Expression={[DateTime]::Parse($_.InstalledOn,$([System.Globalization.CultureInfo]::GetCultureInfo("en-US")))}} }
         else { $Hotfix = Get-Hotfix | Select-Object @{l="InstalledOn";e={[DateTime]::Parse($_.psbase.properties["installedon"].value,$([System.Globalization.CultureInfo]::GetCultureInfo("en-US")))}} }
@@ -937,7 +923,6 @@ Begin {
 
     Function Test-DNSConfiguration {
         Param([Parameter(Mandatory=$true)]$Log)
-        #$dnsdomain = (Get-WmiObject Win32_NetworkAdapterConfiguration -filter "ipenabled = 'true'").DNSDomain
         $fqdn = [System.Net.Dns]::GetHostEntry([string]"localhost").HostName
         if ($PowerShellVersion -ge 6) { $localIPs = Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object {$_.IPEnabled -Match "True"} |  Select-Object -ExpandProperty IPAddress }
         else { $localIPs = Get-WmiObject Win32_NetworkAdapterConfiguration | Where-Object {$_.IPEnabled -Match "True"} |  Select-Object -ExpandProperty IPAddress }
@@ -975,7 +960,6 @@ Begin {
             Write-Verbose 'Checking if one local IP matches on IP from DNS'
             Write-Verbose 'Loop through each IP address published in DNS'
             foreach ($dnsIP in $dnsAddressList) {
-                #Write-Host "Testing if IP address: $dnsIP published in DNS exist in local IP configuration."
                 ##if ($dnsIP -notin $localIPs) { ## Requires PowerShell 3. Works fine :(
                 if ($localIPs -notcontains $dnsIP) {
                    $dnsFail += "IP '$dnsIP' in DNS record do not exist locally`n"
@@ -1022,7 +1006,6 @@ Begin {
                 $log.DNS = 'OK'
             }
         }
-        #Write-Output $obj
     }
 
     # Function to test that 'HKU:\S-1-5-18\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders\' is set to '%USERPROFILE%\AppData\Roaming'. CCMSETUP will fail if not.
@@ -1039,10 +1022,7 @@ Begin {
     Function Test-Update {
         Param([Parameter(Mandatory=$true)]$Log)
 
-        #if (($Xml.Configuration.Option | Where-Object {$_.Name -like 'Updates'} | Select-Object -ExpandProperty 'Enable') -like 'True') {
-
         $UpdateShare = Get-XMLConfigUpdatesShare
-        #$UpdateShare = $Xml.Configuration.Option | Where-Object {$_.Name -like 'Updates'} | Select-Object -ExpandProperty 'Share'
 
 
         Write-Verbose "Validating required updates is installed on the client. Required updates will be installed if missing on client."
@@ -1129,8 +1109,6 @@ Begin {
             if ($LocalDBFilesPresent -eq $False) {
                     New-ClientInstalledReason -Log $Log -Message "ConfigMgr Client database files missing."
                     Write-Host "ConfigMgr Client database files missing. Reinstalling..."
-                    # Add /ForceInstall to Client Install Properties to ensure the client is uninstalled before we install client again.
-                    #if (-NOT ($clientInstallProperties -like "*/forceinstall*")) { $clientInstallProperties = $clientInstallProperties + " /forceinstall" }
                     $Reinstall = $true
                     $Uninstall = $true
             }
@@ -1189,8 +1167,6 @@ Begin {
                 # Lets check that registry settings are OK before we try a new installation.
                 Test-CCMSetup1
 
-                # Adding forceinstall to the client install properties to make sure previous client is uninstalled.
-                #if ( ($localDB -eq $true) -and (-NOT ($clientInstallProperties -like "*/forceinstall*")) ) { $clientInstallProperties = $clientInstallProperties + " /forceinstall" }
                 Resolve-Client -Xml $xml -ClientInstallProperties $clientInstallProperties -FirstInstall $false
                 $log.ClientInstalled = Get-SmallDateTime
                 Start-Sleep 600
@@ -1202,7 +1178,6 @@ Begin {
             Resolve-Client -Xml $xml -ClientInstallProperties $clientInstallProperties -FirstInstall $true
             New-ClientInstalledReason -Log $Log -Message "No agent found."
             $log.ClientInstalled = Get-SmallDateTime
-            #Start-Sleep 600
 
             # Test again if agent is installed
             if (Get-Service -Name ccmexec -ErrorAction SilentlyContinue) {}
@@ -1213,8 +1188,6 @@ Begin {
     Function Test-ClientCacheSize {
         Param([Parameter(Mandatory=$true)]$Log)
         $ClientCacheSize = Get-XMLConfigClientCache
-        #if ($PowerShellVersion -ge 6) { $Cache = Get-CimInstance -Namespace "ROOT\CCM\SoftMgmtAgent" -Class CacheConfig }
-        #else { $Cache = Get-WmiObject -Namespace "ROOT\CCM\SoftMgmtAgent" -Class CacheConfig }
 
         $CurrentCache = Get-ClientCache
 
@@ -1248,8 +1221,6 @@ Begin {
             }
 
             Write-Warning $text
-            #$Cache.Size = $ClientCacheSize
-            #$Cache.Put()
             $log.CacheSize = $ClientCacheSize
             (New-Object -ComObject UIResource.UIResourceMgr).GetCacheInfo().TotalSize = "$ClientCacheSize"
             $obj = $true
@@ -1296,15 +1267,12 @@ Begin {
         if ($ClientSiteCode -like $currentSiteCode) {
             $text = "ConfigMgr Client Site Code: OK"
             Write-Host $text
-            #$obj = $false
         }
         else {
             $text = 'ConfigMgr Client Site Code is "' +$currentSiteCode + '". Expected: "' +$ClientSiteCode +'". Changing sitecode.'
             Write-Warning $text
             $sms.SetAssignedSite($ClientSiteCode)
-            #$obj = $true
         }
-        #Write-Output $obj
     }
 
     function Test-PendingReboot {
@@ -1459,9 +1427,6 @@ Begin {
             catch { Write-Warning "GPO Cache: Failed to remove the registry file ($($MachineRegistryFile))." }
             finally { & Write-Output n | gpupdate.exe /force /target:computer | Out-Null  }
 
-            #Write-Verbose 'Sleeping for 1 minute to allow for group policy to refresh'
-            #Start-Sleep -Seconds 60
-
             Write-Verbose 'Refreshing update policy'
             Get-SCCMPolicyScanUpdateSource
             Get-SCCMPolicySourceUpdateMessage
@@ -1533,9 +1498,6 @@ Begin {
             # Rewrote after the WMI Method stopped working in previous CM client version
             New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\CCM\Logging\@GLOBAL" -Name LogMaxHistory -PropertyType DWORD -Value $clientLogMaxHistory -Force | Out-Null
             New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\CCM\Logging\@GLOBAL" -Name LogMaxSize -PropertyType DWORD -Value $newLogSize -Force | Out-Null
-
-            #Write-Verbose 'Sleeping for 5 seconds to allow WMI method complete before we collect new results...'
-            #Start-Sleep -Seconds 5
 
             try { $Log.MaxLogSize = Get-ClientMaxLogSize }
             catch { $Log.MaxLogSize = 0 }
@@ -2089,7 +2051,6 @@ Begin {
         Write-Verbose "Test the ADMIN$ and C$"
         if ($PowerShellVersion -ge 6) { $share = Get-CimInstance Win32_Share | Where-Object {$_.Name -like 'ADMIN$'} }
         else { $share = Get-WmiObject Win32_Share | Where-Object {$_.Name -like 'ADMIN$'} }
-        #$shareClass = [WMICLASS]"WIN32_Share"  # Depreciated
 
         if ($share.Name -contains 'ADMIN$') {
             $text = 'Adminshare Admin$: OK'
@@ -2099,7 +2060,6 @@ Begin {
 
         if ($PowerShellVersion -ge 6) { $share = Get-CimInstance Win32_Share | Where-Object {$_.Name -like 'C$'} }
         else { $share = Get-WmiObject Win32_Share | Where-Object {$_.Name -like 'C$'} }
-        #$shareClass = [WMICLASS]'WIN32_Share'  # Depreciated
 
         if ($share.Name -contains "C$") {
             $text = 'Adminshare C$: OK'
@@ -2177,16 +2137,9 @@ Begin {
 
     Function Start-RebootApplication {
         $taskName = 'ConfigMgr Client Health - Reboot on demand'
-        #$OS = Get-OperatingSystem
-        #if ($OS -like "*Windows 7*") {
-            $task = schtasks.exe /query | FIND /I "ConfigMgr Client Health - Reboot"
-        #}
-        #else { $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue }
+        $task = schtasks.exe /query | FIND /I "ConfigMgr Client Health - Reboot"
         if ($task -eq $null) { New-RebootTask -taskName $taskName }
-        #if ($OS -notlike "*Windows 7*") {Start-ScheduledTask -TaskName $taskName }
-        #else {
-            schtasks.exe /Run /TN $taskName
-        #}
+        schtasks.exe /Run /TN $taskName
     }
 
     Function New-RebootTask {
@@ -2203,10 +2156,7 @@ Begin {
         $i = $argument.Length -1
         if ($argument.Substring($i) -eq ' ') { $argument = $argument.Substring(0, $argument.Length -1) }
 
-        #$OS = Get-OperatingSystem
-        #if ($OS -like "*Windows 7*") {
-            schtasks.exe /Create /tn $taskName /tr "$execute $argument" /ru "BUILTIN\Users" /sc ONCE /st 00:00 /sd 01/01/1901
-        #}
+        schtasks.exe /Create /tn $taskName /tr "$execute $argument" /ru "BUILTIN\Users" /sc ONCE /st 00:00 /sd 01/01/1901
         <#
         else {
             $action = New-ScheduledTaskAction -Execute $execute -Argument $argument
@@ -3005,7 +2955,6 @@ Begin {
 
     Function GetComputerInfo {
         $info = Get-Info | Select-Object HostName, OperatingSystem, Architecture, Build, InstallDate, Manufacturer, Model, LastLoggedOnUser
-        #$text = 'Computer info'+ "`n"
         $text = 'Hostname: ' +$info.HostName
         Write-Output $text
         #Out-LogFile -Xml $xml $text
@@ -3071,7 +3020,6 @@ Begin {
     }
 
     Function New-LogObject {
-       # Write-Verbose "Start New-LogObject"
 
         if ($PowerShellVersion -ge 6) {
             $OS = Get-CimInstance -class Win32_OperatingSystem
@@ -3172,12 +3120,10 @@ Begin {
             RebootApp = $RebootApp
         }
         Write-Output $obj
-       # Write-Verbose "End New-LogObject"
     }
 
     Function Get-SmallDateTime {
         Param([Parameter(Mandatory=$false)]$Date)
-        #Write-Verbose "Start Get-SmallDateTime"
 
         $UTC = (Get-XMLConfigLoggingTimeFormat).ToLower()
 
@@ -3188,7 +3134,6 @@ Begin {
         else { $obj = Get-DateTime }
         $obj = $obj -replace '\.', ':'
         Write-Output $obj
-        #Write-Verbose "End Get-SmallDateTime"
     }
 
     # Test some values are whole numbers before attempting to insert / update database
@@ -3296,7 +3241,6 @@ Begin {
             )
         # Start the logfile
         Write-Verbose "Start Update-LogFile"
-        #$share = Get-XMLConfigLoggingShare
 
         Test-ValuesBeforeLogUpdate
         $logfile = $logfile = Get-LogFileName

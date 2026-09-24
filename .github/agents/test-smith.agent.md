@@ -22,7 +22,7 @@ handoffs:
 # Test Smith
 
 Write and maintain Pester tests for this repository only. Read [repository guidance](../copilot-instructions.md)
-and [Pester conventions](../instructions/powershell-pester-5.instructions.md).
+and [Pester conventions](../instructions/powershell-pester.instructions.md).
 
 ## Scope
 
@@ -38,7 +38,7 @@ and [Pester conventions](../instructions/powershell-pester-5.instructions.md).
 
 ## Pester Standards
 
-Follow the conventions in [powershell-pester-5.instructions.md](../instructions/powershell-pester-5.instructions.md). Key rules:
+Follow the conventions in [powershell-pester.instructions.md](../instructions/powershell-pester.instructions.md). Key rules:
 
 - All code inside Pester blocks (`BeforeAll`, `Describe`, `Context`, `It`).
 - Use `Describe` per function, `Context` per scenario (e.g. "when XML value is present",

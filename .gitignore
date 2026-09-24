@@ -18,4 +18,5 @@ PSModuleAnalysisCache
 # TestResults output
 TestResults/
 Tests/*.csv
+TestResults.xml
 Tests/TestResults.xml
