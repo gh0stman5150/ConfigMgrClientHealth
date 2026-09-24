@@ -1,5 +1,5 @@
 ---
-description: 'Review and update documentation for one selected repository using verified implementation and local governance.'
+description: 'Review and update documentation for repository using verified implementation and local governance.'
 argument-hint: 'Target repository or a file within it, and optional documentation scope'
 agent: 'agent'
 ---

@@ -1,6 +1,6 @@
 ---
-description: 'Audit workspace and repository AGENTS.md routing while preserving local instruction authority and standalone contracts.'
-argument-hint: 'Multi-repository workspace root and optional repository subset'
+description: 'Audit workspace and repository AGENTS.md .'
+argument-hint: 'Workspace root and repository'
 agent: 'agent'
 ---
 
