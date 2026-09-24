@@ -177,10 +177,6 @@ Begin {
     }
 
     Function Get-Hostname {
-        <#
-        if ($PowerShellVersion -ge 6) { $Obj = (Get-CimInstance Win32_ComputerSystem).Name }
-        else { $Obj = (Get-WmiObject Win32_ComputerSystem).Name }
-        #>
         $obj = $env:COMPUTERNAME
         Write-Output $Obj
     }
@@ -516,10 +512,6 @@ Begin {
 
     Function Get-Sitecode {
         try {
-            <#
-            if ($PowerShellVersion -ge 6) { $obj = (Invoke-CimMethod -Namespace "ROOT\ccm" -ClassName SMS_Client -MethodName GetAssignedSite).sSiteCode }
-            else { $obj = $([WmiClass]"ROOT\ccm:SMS_Client").getassignedsite() | Select-Object -Expandproperty sSiteCode }
-            #>
             $sms = new-object -comobject 'Microsoft.SMS.Client'
             $obj = $sms.GetAssignedSite()
         }
@@ -1455,9 +1447,6 @@ Begin {
         catch { [int]$currentLogSize = 0 }
         try { [int]$currentMaxHistory = Get-ClientMaxLogHistory }
         catch { [int]$currentMaxHistory = 0 }
-        try { $logLevel = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\CCM\Logging\@Global').logLevel }
-        catch { $logLevel = 1 }
-
         $clientLogSize = Get-XMLConfigClientMaxLogSize
         $clientLogMaxHistory = Get-XMLConfigClientMaxLogHistory
 
@@ -1495,16 +1484,7 @@ Begin {
             $newLogSize = [int]$clientLogSize
             $newLogSize = $newLogSize * 1000
 
-            <#
-            if ($PowerShellVersion -ge 6) {Invoke-CimMethod -Namespace "root/ccm" -ClassName "sms_client" -MethodName SetGlobalLoggingConfiguration -Arguments @{LogLevel=$loglevel; LogMaxHistory=$clientLogMaxHistory; LogMaxSize=$newLogSize} }
-            else {
-                $smsClient = [wmiclass]"root/ccm:sms_client"
-                $smsClient.SetGlobalLoggingConfiguration($logLevel, $newLogSize, $clientLogMaxHistory)
-            }
-            #Write-Verbose 'Returning true to trigger restart of ccmexec service'
-            #>
-
-            # Rewrote after the WMI Method stopped working in previous CM client version
+            # Written to the registry because the SMS_Client SetGlobalLoggingConfiguration WMI method stopped working in an earlier CM client version
             New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\CCM\Logging\@GLOBAL" -Name LogMaxHistory -PropertyType DWORD -Value $clientLogMaxHistory -Force | Out-Null
             New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\CCM\Logging\@GLOBAL" -Name LogMaxSize -PropertyType DWORD -Value $newLogSize -Force | Out-Null
 
@@ -2200,13 +2180,6 @@ Begin {
         if ($argument.Substring($i) -eq ' ') { $argument = $argument.Substring(0, $argument.Length -1) }
 
         schtasks.exe /Create /tn $taskName /tr "$execute $argument" /ru "BUILTIN\Users" /sc ONCE /st 00:00 /sd 01/01/1901
-        <#
-        else {
-            $action = New-ScheduledTaskAction -Execute $execute -Argument $argument
-            $userPrincipal = New-ScheduledTaskPrincipal -GroupId "S-1-5-32-545"
-            Register-ScheduledTask -Action $action -TaskName $taskName -Principal $userPrincipal | Out-Null
-        }
-        #>
     }
 
     Function Start-Ccmeval {
@@ -3299,15 +3272,6 @@ Process {
             New-ClientInstalledReason -Log $Log -Message "Below minimum verison."
         }
     }
-
-    <#
-    Write-Verbose 'Validate that ConfigMgr client do not have CcmSQLCE.log and are not in debug mode'
-    if (Test-CcmSQLCELog -eq $true) {
-        # This is a very bad situation. ConfigMgr agent is fubar. Local SDF files are deleted by the test itself, now reinstalling client immediatly. Waiting 10 minutes before continuing with health check.
-        Resolve-Client -Xml $xml -ClientInstallProperties $ClientInstallProperties
-        Start-Sleep -Seconds 600
-    }
-    #>
 
     Write-Verbose 'Validating services...'
     Test-Services -Xml $Xml -log $log
