@@ -397,6 +397,22 @@ Begin {
         }
     }
 
+    Function Write-HostAndLog {
+        # Writes a status message to the console and to the same log files the End block writes:
+        # the local ClientHealth.log when LocalLogFile is true, and the share log when file logging is enabled at Level Full.
+        Param(
+            [Parameter(Mandatory = $true)]$Text,
+            [Parameter(Mandatory = $false)]$ForegroundColor,
+            [Parameter(Mandatory = $false)][ValidateSet(1, 2, 3)]$Severity = 1
+        )
+
+        if ($ForegroundColor) { Write-Host $Text -ForegroundColor $ForegroundColor }
+        else { Write-Host $Text }
+
+        if ((Get-XMLConfigLoggingLocalFile) -like 'true') { Out-LogFile -Xml $Xml -Text $Text -Mode 'Local' -Severity $Severity }
+        if (((Get-XMLConfigLoggingEnable) -like 'true') -and ((Get-XMLConfigLoggingLevel) -like 'full')) { Out-LogFile -Xml $Xml -Text $Text -Severity $Severity }
+    }
+
     Function Get-OperatingSystem {
         $OS = Get-CimOrWmiInstance Win32_OperatingSystem
 
@@ -601,7 +617,7 @@ Begin {
             $now = Get-Date
             if ( (($now - $FileDate).Days -lt 7) -and ((($now - $FileCreated).Days) -gt 7) ) {
                 $text = "CM client not in debug mode, and CcmSQLCE.log exists. This is very bad. Cleaning up local SDF files and reinstalling CM client"
-                Write-Host $text -ForegroundColor Red
+                Write-HostAndLog -Text $text -ForegroundColor Red -Severity 2
                 # Delete *.SDF Files
                 $Service = Get-Service -Name ccmexec
                 $Service.Stop()
@@ -693,7 +709,7 @@ Begin {
         catch { $tsenv = $null }
 
         if ($tsenv) {
-            Write-Host "Configuration Manager Task Sequence detected on computer. Exiting script"
+            Write-HostAndLog -Text "Configuration Manager Task Sequence detected on computer. Exiting script"
             Exit 2
         }
     }
@@ -735,7 +751,7 @@ Begin {
             $obj = $false
         }
 
-        Write-Host $text
+        Write-HostAndLog -Text $text
         Write-Output $Obj
 
     }
@@ -769,7 +785,7 @@ Begin {
 			$log.ClientSettings = 'OK'
 			$Obj = $false
 		}
-		Write-Host $text
+		Write-HostAndLog -Text $text
     }
 
     Function New-ClientInstalledReason {
@@ -1116,7 +1132,7 @@ Begin {
         # If installed, perform tests to decide if reinstall is needed or not.
         if (Get-Service -Name ccmexec -ErrorAction SilentlyContinue) {
             $text = "Configuration Manager Client is installed"
-            Write-Host $text
+            Write-HostAndLog -Text $text
 
             # Lets not reinstall client unless tests tells us to.
             $Reinstall = $false
@@ -1125,7 +1141,7 @@ Begin {
             $LocalDBFilesPresent = Test-CcmSDF
             if ($LocalDBFilesPresent -eq $False) {
                     New-ClientInstalledReason -Log $Log -Message "ConfigMgr Client database files missing."
-                    Write-Host "ConfigMgr Client database files missing. Reinstalling..."
+                    Write-HostAndLog -Text "ConfigMgr Client database files missing. Reinstalling..."
                     $Reinstall = $true
                     $Uninstall = $true
             }
@@ -1133,12 +1149,12 @@ Begin {
             # Only test CM client local DB if this check is enabled
             $testLocalDB = (Get-XMLConfigCcmSQLCELog).ToLower()
             if ($testLocalDB -like "enable") {
-                Write-Host "Testing CcmSQLCELog"
+                Write-HostAndLog -Text "Testing CcmSQLCELog"
                 $LocalDB = Test-CcmSQLCELog
                 if ($LocalDB -eq $true) {
                     # LocalDB is messed up
                     New-ClientInstalledReason -Log $Log -Message "ConfigMgr Client database corrupt."
-                    Write-Host "ConfigMgr Client database corrupt. Reinstalling..."
+                    Write-HostAndLog -Text "ConfigMgr Client database corrupt. Reinstalling..."
                     $Reinstall = $true
                     $Uninstall = $true
                 }
@@ -1149,7 +1165,7 @@ Begin {
             # Reinstall if we are unable to start the CM client
             if (($CCMService.Status -eq "Stopped") -and ($LocalDB -eq $false)) {
                 try {
-                    Write-Host "ConfigMgr Agent not running. Attempting to start it."
+                    Write-HostAndLog -Text "ConfigMgr Agent not running. Attempting to start it."
                     if ($CCMService.StartType -ne "Automatic") {
                         $text = "Configuring service CcmExec StartupType to: Automatic (Delayed Start)..."
                         Write-Output $text
@@ -1180,7 +1196,7 @@ Begin {
 
             if ( $reinstall -eq $true) {
                 $text = "ConfigMgr Client Health thinks the agent need to be reinstalled.."
-                Write-Host $text
+                Write-HostAndLog -Text $text
                 # Lets check that registry settings are OK before we try a new installation.
                 Test-CCMSetup1
 
@@ -1191,7 +1207,7 @@ Begin {
         }
         else {
             $text = "Configuration Manager client is not installed. Installing..."
-            Write-Host $text
+            Write-HostAndLog -Text $text
             Resolve-Client -Xml $xml -ClientInstallProperties $clientInstallProperties -FirstInstall $true
             New-ClientInstalledReason -Log $Log -Message "No agent found."
             $log.ClientInstalled = Get-SmallDateTime
@@ -1222,7 +1238,7 @@ Begin {
 
         if ($CurrentCache -eq $ClientCacheSize) {
             $text = "ConfigMgr Client Cache Size: OK"
-            Write-Host $text
+            Write-HostAndLog -Text $text
             $Log.CacheSize = $CurrentCache
             $obj = $false
         }
@@ -1283,7 +1299,7 @@ Begin {
         # Do more investigation and testing on WMI Method "SetAssignedSite" to possible avoid reinstall of client for this check.
         if ($ClientSiteCode -like $currentSiteCode) {
             $text = "ConfigMgr Client Site Code: OK"
-            Write-Host $text
+            Write-HostAndLog -Text $text
         }
         else {
             $text = 'ConfigMgr Client Site Code is "' +$currentSiteCode + '". Expected: "' +$ClientSiteCode +'". Changing sitecode.'
@@ -1475,9 +1491,9 @@ Begin {
             $Log.MaxLogSize = $currentLogSize
             $Log.MaxLogHistory = $currentMaxHistory
             $text = "ConfigMgr Client Max Log Size: OK ($currentLogSize)"
-            Write-Host $text
+            Write-HostAndLog -Text $text
             $text = "ConfigMgr Client Max Log History: OK ($currentMaxHistory)"
-            Write-Host $text
+            Write-HostAndLog -Text $text
             $obj = $false
         }
         else {
@@ -1488,7 +1504,7 @@ Begin {
             }
             else {
                 $text = "ConfigMgr Client Max Log Size: OK ($currentLogSize)"
-                Write-Host $text
+                Write-HostAndLog -Text $text
             }
             if ($currentMaxHistory -ne $clientLogMaxHistory) {
                 $text = 'ConfigMgr Client Max Log History: Configuring to ' +$clientLogMaxHistory
@@ -1497,7 +1513,7 @@ Begin {
             }
             else {
                 $text = "ConfigMgr Client Max Log History: OK ($currentMaxHistory)"
-                Write-Host $text
+                Write-HostAndLog -Text $text
             }
 
             $newLogSize = [int]$clientLogSize
@@ -1649,7 +1665,7 @@ Begin {
             if ($vote -eq 0) {
                 $text = 'WMI Check: OK'
                 $log.WMI = 'OK'
-                Write-Host $text
+                Write-HostAndLog -Text $text
             }
             else {
                 $fix = Get-XMLConfigWMIRepairEnable
@@ -1841,16 +1857,16 @@ Begin {
     Function Test-SMSTSMgr {
         $service = get-service smstsmgr
         if (($service.ServicesDependedOn).name -contains "ccmexec") {
-            write-host "SMSTSMgr: Removing dependency on CCMExec service."
+            Write-HostAndLog -Text "SMSTSMgr: Removing dependency on CCMExec service."
             start-process sc.exe -ArgumentList "config smstsmgr depend= winmgmt" -wait
         }
 
         # WMI service depenency is present by default
         if (($service.ServicesDependedOn).name -notcontains "Winmgmt") {
-            write-host "SMSTSMgr: Adding dependency on Windows Management Instrumentaion service."
+            Write-HostAndLog -Text "SMSTSMgr: Adding dependency on Windows Management Instrumentaion service."
             start-process sc.exe -ArgumentList "config smstsmgr depend= winmgmt" -wait
         }
-        else { Write-Host "SMSTSMgr: OK"}
+        else { Write-HostAndLog -Text "SMSTSMgr: OK"}
     }
 
 
@@ -1895,7 +1911,27 @@ Begin {
         [Parameter(Mandatory=$True)]$log
         )
 
-        $OSName = Get-OperatingSystem
+        $StartupType = ConvertTo-ServiceStartupType -StartupType $StartupType
+
+        $service = Get-Service -Name $Name
+        $WMIService = Get-CimOrWmiInstance Win32_Service -Property StartMode, ProcessID, Status -Filter "Name='$Name'"
+        $serviceStartType = Get-ServiceStartupType -Name $Name -StartMode $WMIService.StartMode
+
+        Repair-ServiceStartupType -Name $Name -StartupType $StartupType -CurrentStartupType $serviceStartType -Service $service -Log $log
+
+        Write-Verbose 'Verify service is running'
+        if ($service.Status -eq "Running") {
+            $text = 'Service ' +$Name+' running: OK'
+            Write-Output $text
+
+            #If we are checking uptime.
+            If ($Uptime) { Restart-ServiceAfterUptime -Name $Name -Service $service -Uptime $Uptime -Log $log }
+        }
+        else { Start-ServiceWithRecovery -Name $Name -Service $service -WMIService $WMIService -Log $log }
+    }
+
+    Function ConvertTo-ServiceStartupType {
+        param([Parameter(Mandatory=$True)][string]$StartupType)
 
         # Handle all sorts of casing and mispelling of delayed and triggerd start in config.xml services
         $val = $StartupType.ToLower()
@@ -1905,6 +1941,14 @@ Begin {
             "automatic(t*" {$StartupType = "Automatic (Trigger Start)"}
             "automatict*" {$StartupType = "Automatic (Trigger Start)"}
         }
+        Write-Output $StartupType
+    }
+
+    Function Get-ServiceStartupType {
+        param(
+            [Parameter(Mandatory=$True)][string]$Name,
+            [Parameter(Mandatory=$False)]$StartMode
+        )
 
         $path = "HKLM:\SYSTEM\CurrentControlSet\Services\$name"
 
@@ -1913,10 +1957,7 @@ Begin {
             $DelayedAutostart = 0
         }
 
-        $service = Get-Service -Name $Name
-        if ($PowerShellVersion -ge 6) { $WMIService = Get-CimInstance -Class Win32_Service -Property StartMode, ProcessID, Status -Filter "Name='$Name'" }
-        else { $WMIService = Get-WmiObject -Class Win32_Service -Property StartMode, ProcessID, Status -Filter "Name='$Name'" }
-        $StartMode = ($WMIService.StartMode).ToLower()
+        $StartMode = ($StartMode).ToLower()
 
         switch -Wildcard ($StartMode) {
             "auto*" {
@@ -1933,9 +1974,22 @@ Begin {
             "manual" {$serviceStartType = "Manual"}
             "disabled" {$serviceStartType = "Disabled"}
         }
+        Write-Output $serviceStartType
+    }
+
+    Function Repair-ServiceStartupType {
+        param(
+            [Parameter(Mandatory=$True)][string]$Name,
+            [Parameter(Mandatory=$True)][string]$StartupType,
+            [Parameter(Mandatory=$False)]$CurrentStartupType,
+            [Parameter(Mandatory=$False)]$Service,
+            [Parameter(Mandatory=$True)]$log
+        )
+
+        $OSName = Get-OperatingSystem
 
         Write-Verbose "Verify startup type"
-        if ($serviceStartType -eq $StartupType)
+        if ($CurrentStartupType -eq $StartupType)
         {
             $text = "Service $Name startup: OK"
             Write-Output $text
@@ -1971,94 +2025,110 @@ Begin {
                 Write-Error $text
             }
         }
+    }
 
-        Write-Verbose 'Verify service is running'
-        if ($service.Status -eq "Running") {
-            $text = 'Service ' +$Name+' running: OK'
-            Write-Output $text
+    Function Restart-ServiceAfterUptime {
+        param(
+            [Parameter(Mandatory=$True)][string]$Name,
+            [Parameter(Mandatory=$False)]$Service,
+            [Parameter(Mandatory=$True)][int]$Uptime,
+            [Parameter(Mandatory=$True)]$log
+        )
 
-            #If we are checking uptime.
-            If ($Uptime){
-                Write-Verbose "Verify the $($Name) service hasn't exceeded uptime of $($Uptime) days."
-                $ServiceUptime= Get-ServiceUpTime -Name $Name
-                if ($ServiceUptime -ge $Uptime) {
-                    try {
+        Write-Verbose "Verify the $($Name) service hasn't exceeded uptime of $($Uptime) days."
+        $ServiceUptime= Get-ServiceUpTime -Name $Name
+        if ($ServiceUptime -ge $Uptime) {
+            try {
+                $ProcessesStopped = Wait-InstallationProcess -Name $Name -WaitMinutes 30
 
-                        #Before restarting the service wait for some known processes to end.  Restarting the service while an app or updates is installing might cause issues.
-                        $Timer = [Diagnostics.Stopwatch]::StartNew()
-                        $WaitMinutes = 30
-                        $ProcessesStopped=$True
-                        While ((Get-Process -Name WUSA,wuauclt,setup,TrustedInstaller,msiexec,TiWorker,ccmsetup -ErrorAction SilentlyContinue).Count -gt 0){
-                            $MinutesLeft = $WaitMinutes - $Timer.Elapsed.Minutes
-
-                            If($MinutesLeft -le 0){
-                                Write-Warning "Timed out waiting $($WaitMinutes) minutes for installation processes to complete.  Will not restart the $($Name) service."
-                                $ProcessesStopped=$False
-                                Break
-                            }
-                            Write-Warning "Waiting $($MinutesLeft) minutes for installation processes to complete."
-                            Start-Sleep -Seconds 30
-                        }
-                        $Timer.Stop()
-
-                        #If the processes are not running the restart the service.
-                        If ($ProcessesStopped){
-                            Write-Output "Restarting service: $($Name)..."
-                            Restart-Service  -Name $service.Name -Force
-                            Write-Output "Restarted service: $($Name)..."
-                            $log.Services = 'Restarted'
-                        }
-                    } catch {
-                        $text = "Failed to restart service $($Name)"
-                        Write-Error $text
-                    }
+                #If the processes are not running the restart the service.
+                If ($ProcessesStopped){
+                    Write-Output "Restarting service: $($Name)..."
+                    Restart-Service  -Name $service.Name -Force
+                    Write-Output "Restarted service: $($Name)..."
+                    $log.Services = 'Restarted'
                 }
-                else {
-                    Write-Output "Service $($Name) uptime: OK"
-                }
+            } catch {
+                $text = "Failed to restart service $($Name)"
+                Write-Error $text
             }
         }
         else {
-            if ($WMIService.Status -eq 'Degraded') {
-                try {
-                    Write-Warning "Identified $Name service in a 'Degraded' state. Will force $Name process to stop."
-                    $ServicePID = $WMIService | Select-Object -ExpandProperty ProcessID
-                    Stop-Process -ID $ServicePID -Force:$true -Confirm:$false -ErrorAction Stop
-                    Write-Verbose "Succesfully stopped the $Name service process which was in a degraded state."
-                }
-                Catch{
-                    Write-Error "Failed to force $Name process to stop."
-                }
+            Write-Output "Service $($Name) uptime: OK"
+        }
+    }
+
+    Function Wait-InstallationProcess {
+        param(
+            [Parameter(Mandatory=$True)][string]$Name,
+            [Parameter(Mandatory=$True)][int]$WaitMinutes
+        )
+
+        #Before restarting the service wait for some known processes to end.  Restarting the service while an app or updates is installing might cause issues.
+        $Timer = [Diagnostics.Stopwatch]::StartNew()
+        $ProcessesStopped=$True
+        While ((Get-Process -Name WUSA,wuauclt,setup,TrustedInstaller,msiexec,TiWorker,ccmsetup -ErrorAction SilentlyContinue).Count -gt 0){
+            $MinutesLeft = $WaitMinutes - $Timer.Elapsed.Minutes
+
+            If($MinutesLeft -le 0){
+                Write-Warning "Timed out waiting $($WaitMinutes) minutes for installation processes to complete.  Will not restart the $($Name) service."
+                $ProcessesStopped=$False
+                Break
             }
+            Write-Warning "Waiting $($MinutesLeft) minutes for installation processes to complete."
+            Start-Sleep -Seconds 30
+        }
+        $Timer.Stop()
+        Write-Output $ProcessesStopped
+    }
+
+    Function Start-ServiceWithRecovery {
+        param(
+            [Parameter(Mandatory=$True)][string]$Name,
+            [Parameter(Mandatory=$False)]$Service,
+            [Parameter(Mandatory=$False)]$WMIService,
+            [Parameter(Mandatory=$True)]$log
+        )
+
+        if ($WMIService.Status -eq 'Degraded') {
             try {
-                $RetryService= $False
-                $text = 'Starting service: ' + $Name + '...'
-                Write-Output $text
+                Write-Warning "Identified $Name service in a 'Degraded' state. Will force $Name process to stop."
+                $ServicePID = $WMIService | Select-Object -ExpandProperty ProcessID
+                Stop-Process -ID $ServicePID -Force:$true -Confirm:$false -ErrorAction Stop
+                Write-Verbose "Succesfully stopped the $Name service process which was in a degraded state."
+            }
+            Catch{
+                Write-Error "Failed to force $Name process to stop."
+            }
+        }
+        try {
+            $RetryService= $False
+            $text = 'Starting service: ' + $Name + '...'
+            Write-Output $text
+            Start-Service -Name $service.Name -ErrorAction Stop
+            $log.Services = 'Started'
+        } catch {
+            #Error 1290 (-2146233087) indicates that the service is sharing a thread with another service that is protected and cannot share its thread.
+            #This is resolved by configuring the service to run on its own thread.
+            If ($_.Exception.Hresult -eq '-2146233087'){
+                Write-Output "Failed to start service $Name because it's sharing a thread with another process.  Changing to use its own thread."
+                & cmd /c sc config $Name type= own
+                $RetryService= $True
+            }
+            Else{
+                $text = 'Failed to start service ' +$Name
+                Write-Error $text
+            }
+        }
+
+        #If a recoverable error was found, try starting it again.
+        If ($RetryService){
+            try {
                 Start-Service -Name $service.Name -ErrorAction Stop
                 $log.Services = 'Started'
             } catch {
-                #Error 1290 (-2146233087) indicates that the service is sharing a thread with another service that is protected and cannot share its thread.
-                #This is resolved by configuring the service to run on its own thread.
-                If ($_.Exception.Hresult -eq '-2146233087'){
-                    Write-Output "Failed to start service $Name because it's sharing a thread with another process.  Changing to use its own thread."
-                    & cmd /c sc config $Name type= own
-                    $RetryService= $True
-                }
-                Else{
-                    $text = 'Failed to start service ' +$Name
-                    Write-Error $text
-                }
-            }
-
-            #If a recoverable error was found, try starting it again.
-            If ($RetryService){
-                try {
-                    Start-Service -Name $service.Name -ErrorAction Stop
-                    $log.Services = 'Started'
-                } catch {
-                    $text = 'Failed to start service ' +$Name
-                    Write-Error $text
-                }
+                $text = 'Failed to start service ' +$Name
+                Write-Error $text
             }
         }
     }
@@ -2184,7 +2254,7 @@ Begin {
     }
 
     Function Start-Ccmeval {
-        Write-Host "Starting Built-in Configuration Manager Client Health Evaluation"
+        Write-HostAndLog -Text "Starting Built-in Configuration Manager Client Health Evaluation"
         $task = "Microsoft\Configuration Manager\Configuration Manager Health Evaluation"
         schtasks.exe /Run /TN $task | Out-Null
     }
@@ -2250,7 +2320,7 @@ Begin {
             $fix = (Get-XMLConfigHardwareInventoryFix).ToLower()
             if ($fix -eq "true") {
                 $text = "ConfigMgr Hardware Inventory scan: $HWScanDate. Starting hardware inventory scan of the client."
-                Write-Host $Text
+                Write-HostAndLog -Text $Text
                 Get-SCCMPolicyHardwareInventory
 
                 # Get the new date after policy trigger
@@ -2278,7 +2348,7 @@ Begin {
     Function Test-PolicyPlatform {
         Param([Parameter(Mandatory=$true)]$Log)
         try {
-            if (Get-WmiObject -Namespace 'root/Microsoft' -Class '__Namespace' -Filter 'Name = "PolicyPlatform"') { Write-Host "PolicyPlatform: OK" }
+            if (Get-WmiObject -Namespace 'root/Microsoft' -Class '__Namespace' -Filter 'Name = "PolicyPlatform"') { Write-HostAndLog -Text "PolicyPlatform: OK" }
             else {
                 Write-Warning "PolicyPlatform: Not found, recompiling WMI 'Microsoft Policy Platform\ExtendedStatus.mof'"
 
@@ -2328,7 +2398,7 @@ Begin {
 
             if ($fix -eq "true") {
                 $Text = "Software Metering - PrepDriver: Error. Remediating..."
-                Write-Host $Text
+                Write-HostAndLog -Text $Text
                 $CMClientDIR = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\SMS\Client\Configuration\Client Properties" -Name 'Local SMS Path').'Local SMS Path'
                 $ExePath = $env:windir + '\system32\RUNDLL32.EXE'
                 $CLine = ' SETUPAPI.DLL,InstallHinfSection DefaultInstall 128 ' + $CMClientDIR + 'prepdrv.inf'
@@ -2352,7 +2422,7 @@ Begin {
         }
         else {
             $Text = "Software Metering - PrepDriver: OK"
-            Write-Host $Text
+            Write-HostAndLog -Text $Text
             $Obj = $true
             $Log.SWMetering = "OK"
         }
@@ -3328,10 +3398,10 @@ Process {
         Test-InTaskSequence
 
         $StartupText1 = "PowerShell version: " + $PSVersionTable.PSVersion + ". Script executing with Administrator rights."
-        Write-Host $StartupText1
+        Write-HostAndLog -Text $StartupText1
 
           $StartupText2 = "ConfigMgr Client Health " +$Version+ " starting."
-          Write-Host $StartupText2
+          Write-HostAndLog -Text $StartupText2
     }
 
 

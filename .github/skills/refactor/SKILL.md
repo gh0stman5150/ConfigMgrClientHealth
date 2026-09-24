@@ -19,7 +19,8 @@ Improve the structure of [ConfigMgrClientHealth.ps1](../../../ConfigMgrClientHea
 ## Refactors that fit this script
 
 - **CIM/WMI duplication:** replace an `if ($PowerShellVersion -ge 6) { Get-CimInstance ... } else { Get-WmiObject ... }` pair with `Get-CimOrWmiInstance` only when both branches pass the same class, namespace, filter, and properties. Leave `Get-Hotfix` fallbacks, `Invoke-CimMethod` / `Invoke-WmiMethod` calls, and DMTF date conversions (`ConvertToDateTime`) alone, because they really differ by version.
-- **Large functions:** split long `Test-*` functions (for example `Test-Service`) into a detection function and a remediation function. Keep the original function name as the entry point that the Process block calls.
+- **Large functions:** split long `Test-*` functions (for example `Test-ConfigMgrClient` or `Test-DNSConfiguration`) into detection and remediation functions. Keep the original function name and parameters as the entry point that the Process block calls. `Test-Service` is a worked example: it now orchestrates `Get-ServiceStartupType`, `Repair-ServiceStartupType`, `Restart-ServiceAfterUptime`, and `Start-ServiceWithRecovery`.
+- **Characterize first:** before splitting, add tests that pin the current output text, `$Log` values, and mocked side effects, and confirm they pass on the unchanged code. They must still pass afterwards without edits.
 - **Dead code:** delete commented-out code; git history keeps it. Keep comments that explain why something is deliberately disabled.
 - **Repeated literals:** when the same class name, registry path, or message appears in several functions, a local variable in the Begin block is fine if it doesn't change the config contract.
 

@@ -475,3 +475,336 @@ Describe 'Get-CimOrWmiInstance' {
         { Get-CimOrWmiInstance SMS_Client -Namespace 'root\ccm' -ErrorAction SilentlyContinue } | Should -Not -Throw
     }
 }
+
+Describe 'Test-Service' {
+    BeforeAll {
+        $sourceContent = Get-Content -Path $script:SourceFile -Raw
+        $functionNames = @(
+            'Test-Service', 'ConvertTo-ServiceStartupType', 'Get-ServiceStartupType', 'Repair-ServiceStartupType',
+            'Restart-ServiceAfterUptime', 'Wait-InstallationProcess', 'Start-ServiceWithRecovery', 'Get-CimOrWmiInstance'
+        )
+        $script:TestServiceSource = foreach ($name in $functionNames) {
+            $pattern = "(?ms)^\s*Function\s+$([regex]::Escape($name))\s*\{.*?^\s*\}\s*(?=^\s*Function\s+|\z)"
+            $functionMatch = [regex]::Match($sourceContent, $pattern)
+            if (-not $functionMatch.Success) {
+                throw "Unable to extract $name from ConfigMgrClientHealth.ps1"
+            }
+            $functionMatch.Value
+        }
+
+        # Stubs shadow script functions and native executables so nothing reaches the real system.
+        function Get-OperatingSystem {}
+        function Get-ServiceUpTime { param($Name) }
+        function sc.exe {}
+        function cmd {}
+
+        function New-ServiceLog { [pscustomobject]@{ Services = 'OK' } }
+    }
+
+    BeforeEach {
+        foreach ($source in $script:TestServiceSource) { Invoke-Expression $source }
+
+        $PowerShellVersion = 7
+        $script:ServiceStatus = 'Running'
+        $script:ServiceStartType = 'Automatic'
+        $script:WmiStartMode = 'Auto'
+        $script:WmiStatus = 'OK'
+        $script:DelayedAutostart = 0
+        $script:ServiceUptimeDays = 1
+
+        Mock Get-OperatingSystem { 'Windows 11 64-Bit' }
+        Mock Get-ServiceUpTime { $script:ServiceUptimeDays }
+        Mock Get-ItemProperty { [pscustomobject]@{ DelayedAutostart = $script:DelayedAutostart } }
+        Mock Get-Service { [pscustomobject]@{ Name = [string]$Name; Status = $script:ServiceStatus; StartType = $script:ServiceStartType } }
+        Mock Get-CimInstance { [pscustomobject]@{ StartMode = $script:WmiStartMode; Status = $script:WmiStatus; ProcessID = 4242 } }
+        Mock Get-WmiObject { [pscustomobject]@{ StartMode = $script:WmiStartMode; Status = $script:WmiStatus; ProcessID = 4242 } }
+        Mock Set-Service {}
+        Mock Start-Service {}
+        Mock Restart-Service {}
+        Mock Stop-Process {}
+        Mock Get-Process {}
+        Mock Start-Sleep {}
+        Mock sc.exe { $script:NativeArgs = @($args) }
+        Mock cmd { $script:NativeArgs = @($args) }
+    }
+
+    It 'reports OK and changes nothing when startup type and state already match' {
+        $log = New-ServiceLog
+
+        $output = Test-Service -Name 'TestSvc01' -StartupType 'Automatic' -State 'Running' -Log $log
+
+        $output | Should -Be @('Service TestSvc01 startup: OK', 'Service TestSvc01 running: OK')
+        $log.Services | Should -Be 'OK'
+        Should -Invoke Set-Service -Times 0 -Exactly
+        Should -Invoke Start-Service -Times 0 -Exactly
+        Should -Invoke sc.exe -Times 0 -Exactly
+    }
+
+    It 'reads the current start mode through CIM with the service filter' {
+        Test-Service -Name 'TestSvc01' -StartupType 'Automatic' -State 'Running' -Log (New-ServiceLog) | Out-Null
+
+        Should -Invoke Get-CimInstance -Times 1 -Exactly -ParameterFilter {
+            $ClassName -eq 'Win32_Service' -and $Filter -eq "Name='TestSvc01'" -and ($Property -join ',') -eq 'StartMode,ProcessID,Status'
+        }
+    }
+
+    It 'sets a different configured startup type with Set-Service' {
+        $log = New-ServiceLog
+
+        $output = Test-Service -Name 'TestSvc01' -StartupType 'Manual' -State 'Running' -Log $log
+
+        $output | Should -Contain 'Configuring service TestSvc01 StartupType to: Manual...'
+        Should -Invoke Set-Service -Times 1 -Exactly -ParameterFilter { $Name -eq 'TestSvc01' -and $StartupType -eq 'Manual' }
+        $log.Services | Should -Be 'Started'
+    }
+
+    It 'uses sc.exe for delayed start when the service is automatic without the delay flag' {
+        $log = New-ServiceLog
+
+        $output = Test-Service -Name 'TestSvc01' -StartupType 'automaticd' -State 'Running' -Log $log
+
+        $output | Should -Contain 'Configuring service TestSvc01 StartupType to: Automatic (Delayed Start)...'
+        Should -Invoke sc.exe -Times 1 -Exactly
+        # The script passes the Get-Service object, which PowerShell converts to the service name for native commands.
+        $script:NativeArgs[0] | Should -Be 'config'
+        $script:NativeArgs[1].Name | Should -Be 'TestSvc01'
+        $script:NativeArgs[2..3] | Should -Be @('start=', 'delayed-auto')
+        Should -Invoke Set-Service -Times 0 -Exactly
+        $log.Services | Should -Be 'Started'
+    }
+
+    It 'treats a delayed-start service with the delay flag as OK' {
+        $script:DelayedAutostart = 1
+
+        $output = Test-Service -Name 'TestSvc01' -StartupType 'Automatic (Delayed Start)' -State 'Running' -Log (New-ServiceLog)
+
+        $output | Should -Contain 'Service TestSvc01 startup: OK'
+        Should -Invoke sc.exe -Times 0 -Exactly
+    }
+
+    It 'sets wuauserv to Automatic instead of delayed start on Windows 11' {
+        $script:ServiceStartType = 'Manual'
+        $script:WmiStartMode = 'Manual'
+        $log = New-ServiceLog
+
+        $output = Test-Service -Name 'wuauserv' -StartupType 'automaticd' -State 'Running' -Log $log
+
+        $output | Should -Contain 'Configuring service wuauserv StartupType to: Automatic (Trigger Start)...'
+        Should -Invoke Set-Service -Times 1 -Exactly -ParameterFilter { $Name -eq 'wuauserv' -and $StartupType -eq 'Automatic' }
+        Should -Invoke sc.exe -Times 0 -Exactly
+        $log.Services | Should -Be 'OK'
+    }
+
+    It 'starts a stopped service' {
+        $script:ServiceStatus = 'Stopped'
+        $log = New-ServiceLog
+
+        $output = Test-Service -Name 'TestSvc01' -StartupType 'Automatic' -State 'Running' -Log $log
+
+        $output | Should -Contain 'Starting service: TestSvc01...'
+        Should -Invoke Start-Service -Times 1 -Exactly -ParameterFilter { $Name -eq 'TestSvc01' }
+        Should -Invoke Stop-Process -Times 0 -Exactly
+        $log.Services | Should -Be 'Started'
+    }
+
+    It 'stops the process of a degraded service before starting it' {
+        $script:ServiceStatus = 'Stopped'
+        $script:WmiStatus = 'Degraded'
+        Mock Write-Warning {}
+
+        Test-Service -Name 'TestSvc01' -StartupType 'Automatic' -State 'Running' -Log (New-ServiceLog) | Out-Null
+
+        Should -Invoke Stop-Process -Times 1 -Exactly -ParameterFilter { $Id -eq 4242 }
+        Should -Invoke Start-Service -Times 1 -Exactly
+    }
+
+    It 'moves a service to its own thread and retries when it fails with error 1290' {
+        $script:ServiceStatus = 'Stopped'
+        $script:StartAttempts = 0
+        Mock Start-Service {
+            $script:StartAttempts++
+            if ($script:StartAttempts -eq 1) {
+                $exception = [System.Exception]::new('Service shares a thread with a protected service')
+                $exception.HResult = -2146233087
+                throw $exception
+            }
+        }
+        $log = New-ServiceLog
+
+        $output = Test-Service -Name 'TestSvc01' -StartupType 'Automatic' -State 'Running' -Log $log
+
+        $output | Should -Contain "Failed to start service TestSvc01 because it's sharing a thread with another process.  Changing to use its own thread."
+        Should -Invoke cmd -Times 1 -Exactly
+        $script:NativeArgs | Should -Be @('/c', 'sc', 'config', 'TestSvc01', 'type=', 'own')
+        $script:StartAttempts | Should -Be 2
+        $log.Services | Should -Be 'Started'
+    }
+
+    It 'restarts a running service whose uptime exceeds the configured limit' {
+        $script:ServiceUptimeDays = 10
+        $log = New-ServiceLog
+
+        $output = Test-Service -Name 'TestSvc01' -StartupType 'Automatic' -State 'Running' -Uptime 7 -Log $log
+
+        $output | Should -Contain 'Restarted service: TestSvc01...'
+        Should -Invoke Restart-Service -Times 1 -Exactly -ParameterFilter { $Name -eq 'TestSvc01' }
+        $log.Services | Should -Be 'Restarted'
+    }
+
+    It 'reports uptime OK when the service is within the limit' {
+        $script:ServiceUptimeDays = 3
+
+        $output = Test-Service -Name 'TestSvc01' -StartupType 'Automatic' -State 'Running' -Uptime 7 -Log (New-ServiceLog)
+
+        $output | Should -Contain 'Service TestSvc01 uptime: OK'
+        Should -Invoke Restart-Service -Times 0 -Exactly
+    }
+
+    It 'does not restart the service when installation processes are still running after the wait' {
+        $script:ServiceUptimeDays = 10
+        Mock Wait-InstallationProcess { $false }
+        $log = New-ServiceLog
+
+        Test-Service -Name 'TestSvc01' -StartupType 'Automatic' -State 'Running' -Uptime 7 -Log $log | Out-Null
+
+        Should -Invoke Wait-InstallationProcess -Times 1 -Exactly -ParameterFilter { $WaitMinutes -eq 30 }
+        Should -Invoke Restart-Service -Times 0 -Exactly
+        $log.Services | Should -Be 'OK'
+    }
+}
+
+Describe 'Wait-InstallationProcess' {
+    BeforeAll {
+        $sourceContent = Get-Content -Path $script:SourceFile -Raw
+        $pattern = '(?ms)^\s*Function\s+Wait-InstallationProcess\s*\{.*?^\s*\}\s*(?=^\s*Function\s+|\z)'
+        $functionMatch = [regex]::Match($sourceContent, $pattern)
+
+        if (-not $functionMatch.Success) {
+            throw 'Unable to extract Wait-InstallationProcess from ConfigMgrClientHealth.ps1'
+        }
+
+        $script:WaitSource = $functionMatch.Value
+    }
+
+    BeforeEach {
+        Invoke-Expression $script:WaitSource
+
+        Mock Start-Sleep {}
+        Mock Write-Warning {}
+    }
+
+    It 'returns true without waiting when no installation processes are running' {
+        Mock Get-Process {}
+
+        Wait-InstallationProcess -Name 'TestSvc01' -WaitMinutes 30 | Should -BeTrue
+
+        Should -Invoke Start-Sleep -Times 0 -Exactly
+    }
+
+    It 'returns false and warns when installation processes outlast the wait limit' {
+        Mock Get-Process { @([pscustomobject]@{ Name = 'msiexec' }) }
+
+        Wait-InstallationProcess -Name 'TestSvc01' -WaitMinutes 0 | Should -BeFalse
+
+        Should -Invoke Write-Warning -Times 1 -Exactly -ParameterFilter { $Message -like 'Timed out waiting 0 minutes*TestSvc01*' }
+    }
+
+    It 'waits and then returns true once installation processes finish' {
+        $script:ProcessChecks = 0
+        Mock Get-Process {
+            $script:ProcessChecks++
+            if ($script:ProcessChecks -eq 1) { @([pscustomobject]@{ Name = 'msiexec' }) }
+        }
+
+        Wait-InstallationProcess -Name 'TestSvc01' -WaitMinutes 30 | Should -BeTrue
+
+        Should -Invoke Start-Sleep -Times 1 -Exactly -ParameterFilter { $Seconds -eq 30 }
+    }
+}
+
+Describe 'Write-HostAndLog' {
+    BeforeAll {
+        $sourceContent = Get-Content -Path $script:SourceFile -Raw
+        $pattern = '(?ms)^\s*Function\s+Write-HostAndLog\s*\{.*?^\s*\}\s*(?=^\s*Function\s+|\z)'
+        $functionMatch = [regex]::Match($sourceContent, $pattern)
+
+        if (-not $functionMatch.Success) {
+            throw 'Unable to extract Write-HostAndLog from ConfigMgrClientHealth.ps1'
+        }
+
+        $script:HostAndLogSource = $functionMatch.Value
+
+        function Get-XMLConfigLoggingLocalFile {}
+        function Get-XMLConfigLoggingEnable {}
+        function Get-XMLConfigLoggingLevel {}
+        function Out-LogFile { param($Xml, $Text, $Mode, $Severity) }
+    }
+
+    BeforeEach {
+        Invoke-Expression $script:HostAndLogSource
+
+        $script:Xml = $null
+        $script:LocalFile = 'True'
+        $script:FileEnable = 'True'
+        $script:FileLevel = 'Full'
+
+        Mock Get-XMLConfigLoggingLocalFile { $script:LocalFile }
+        Mock Get-XMLConfigLoggingEnable { $script:FileEnable }
+        Mock Get-XMLConfigLoggingLevel { $script:FileLevel }
+        Mock Out-LogFile {}
+        Mock Write-Host {}
+    }
+
+    It 'writes to the console, the local log, and the share log when all are enabled' {
+        Write-HostAndLog -Text 'SMSTSMgr: OK'
+
+        Should -Invoke Write-Host -Times 1 -Exactly -ParameterFilter { $Object -eq 'SMSTSMgr: OK' -and -not $ForegroundColor }
+        Should -Invoke Out-LogFile -Times 1 -Exactly -ParameterFilter { $Mode -eq 'Local' -and $Text -eq 'SMSTSMgr: OK' -and $Severity -eq 1 }
+        Should -Invoke Out-LogFile -Times 1 -Exactly -ParameterFilter { -not $Mode -and $Text -eq 'SMSTSMgr: OK' -and $Severity -eq 1 }
+    }
+
+    It 'passes the console color and severity through' {
+        Write-HostAndLog -Text 'CcmSQLCE.log exists' -ForegroundColor Red -Severity 2
+
+        Should -Invoke Write-Host -Times 1 -Exactly -ParameterFilter { $ForegroundColor -eq 'Red' }
+        Should -Invoke Out-LogFile -Times 2 -Exactly -ParameterFilter { $Severity -eq 2 }
+    }
+
+    It 'skips the share log when the file log level is not Full' {
+        $script:FileLevel = 'ClientInstall'
+
+        Write-HostAndLog -Text 'SMSTSMgr: OK'
+
+        Should -Invoke Out-LogFile -Times 1 -Exactly
+        Should -Invoke Out-LogFile -Times 1 -Exactly -ParameterFilter { $Mode -eq 'Local' }
+    }
+
+    It 'skips the share log when file logging is disabled' {
+        $script:FileEnable = 'False'
+
+        Write-HostAndLog -Text 'SMSTSMgr: OK'
+
+        Should -Invoke Out-LogFile -Times 1 -Exactly -ParameterFilter { $Mode -eq 'Local' }
+        Should -Invoke Out-LogFile -Times 0 -Exactly -ParameterFilter { -not $Mode }
+    }
+
+    It 'skips the local log when LocalLogFile is false' {
+        $script:LocalFile = 'False'
+
+        Write-HostAndLog -Text 'SMSTSMgr: OK'
+
+        Should -Invoke Out-LogFile -Times 0 -Exactly -ParameterFilter { $Mode -eq 'Local' }
+        Should -Invoke Out-LogFile -Times 1 -Exactly -ParameterFilter { -not $Mode }
+    }
+
+    It 'only writes to the console when no configuration is loaded' {
+        $script:LocalFile = $null
+        $script:FileEnable = $null
+        $script:FileLevel = $null
+
+        Write-HostAndLog -Text 'Configuration Manager Task Sequence detected on computer. Exiting script'
+
+        Should -Invoke Write-Host -Times 1 -Exactly
+        Should -Invoke Out-LogFile -Times 0 -Exactly
+    }
+}

@@ -136,6 +136,13 @@ Use the following checks when the script does not behave as expected:
 
 The script writes log output using a CMTrace-style format and can fall back to a local `C:\ClientHealth` path depending on configuration.
 
+Remediation status messages shown on the console (for example "ConfigMgr Client database corrupt. Reinstalling..." or "SMSTSMgr: OK") are also written to the log files as they happen, so unattended runs keep them:
+
+- to the local `ClientHealth.log` when `LocalLogFile="True"`
+- to the share log when the `File` log is enabled and `Level="Full"`
+
+These lines appear before the end-of-run summary block that starts with `<--- ConfigMgr Client Health Check starting --->`. With `Level="ClientInstall"`, the share log receives only the existing failure entries, not these status messages.
+
 ## Testing and validation
 
 The repository includes a [Pester regression suite](Tests/ConfigMgrClientHealth.Tests.ps1) and a [Windows CI workflow](.github/workflows/workspace-tests.yml). From the repository root, run `Invoke-Pester -Path ./Tests -Output Detailed` using the Pester version configured by the workflow. Tests load isolated functions instead of executing the remediation entry point. Mocked tests do not verify live integrations. Additional validation includes:
