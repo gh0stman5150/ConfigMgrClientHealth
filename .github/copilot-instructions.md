@@ -67,7 +67,7 @@ $pattern = "(?ms)^\s*Function\s+$([regex]::Escape($name))\s*\{.*?^\s*\}\s*(?=^\s
 
 Tests set the implicit state the function expects (`$script:Xml`, `$script:config`, `$global:ScriptPath`, `$PowerShellVersion`) and `Mock` every external effect (CIM/WMI, services, registry, `Test-Path`, `Invoke-RestMethod`, SQL). Extract or mock any other script function the code calls. Tests must not depend on the host OS.
 
-Because the regex keys on a line starting `Function Name {` and ends at the closing brace followed by the next `Function`, keep that layout. Put a function's comments inside its body, not between functions.
+Because the regex keys on a line starting `Function Name {` and ends at the closing brace followed by the next `Function`, keep that layout, with `Function` capitalized because the regex is case-sensitive. Put a function's comments inside its body, not between functions.
 
 ## Coding rules
 

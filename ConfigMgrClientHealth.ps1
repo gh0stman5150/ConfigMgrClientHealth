@@ -653,7 +653,7 @@ Begin {
 
     }
 
-    function Test-CCMCertificateError {
+    Function Test-CCMCertificateError {
         Param([Parameter(Mandatory=$true)]$Log)
         # More checks to come
         $logdir = Get-CCMLogDirectory
@@ -791,7 +791,7 @@ Begin {
     }
 
 
-    function Get-PendingReboot {
+    Function Get-PendingReboot {
         $result = @{
             CBSRebootPending =$false
             WindowsUpdateRebootRequired = $false
@@ -902,7 +902,7 @@ Begin {
         elseif (($Date2 -gt $Date) -and ($null -ne $Date2)) { $Log.OSUpdates = Get-SmallDateTime -Date $Date2 }
     }
 
-    function Measure-Latest {
+    Function Measure-Latest {
         BEGIN { $latest = $null }
         PROCESS { if (($null -ne $_) -and (($null -eq $latest) -or ($_ -gt $latest))) { $latest = $_ } }
         END { $latest }
@@ -1298,7 +1298,7 @@ Begin {
         }
     }
 
-    function Test-PendingReboot {
+    Function Test-PendingReboot {
         Param([Parameter(Mandatory=$true)]$Log)
         # Only run pending reboot check if enabled in config
         if (($Xml.Configuration.Option | Where-Object {$_.Name -like 'PendingReboot'} | Select-Object -ExpandProperty 'Enable') -like 'True') {
@@ -1611,7 +1611,7 @@ Begin {
         }
     }
 
-    function Register-DLLFile {
+    Function Register-DLLFile {
         [CmdletBinding()]
         param ([string]$FilePath)
 
@@ -2414,7 +2414,7 @@ Begin {
     {00000000-0000-0000-0000-000000000223} External event detection
     #>
 
-    function Test-SQLConnection {
+    Function Test-SQLConnection {
         $SQLServer = Get-XMLConfigSQLServer
         $Database = 'ClientHealth'
         $FileLogLevel = ((Get-XMLConfigLoggingLevel).ToString()).ToLower()
@@ -2442,7 +2442,7 @@ Begin {
     }
 
     # Invoke-SqlCmd2 - Created by Chad Miller
-    function Invoke-Sqlcmd2 {
+    Function Invoke-Sqlcmd2 {
         [CmdletBinding()]
         param(
         [Parameter(Position=0, Mandatory=$true)] [string]$ServerInstance,

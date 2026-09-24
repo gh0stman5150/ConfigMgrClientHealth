@@ -728,6 +728,26 @@ Describe 'Wait-InstallationProcess' {
     }
 }
 
+Describe 'Function layout' {
+    It 'declares every function so the test extractor can find it' {
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:SourceFile, [ref]$null, [ref]$null)
+        $names = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
+            Where-Object {
+                $node = $_.Parent
+                while ($node -and $node -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) { $node = $node.Parent }
+                $null -eq $node
+            } | ForEach-Object { $_.Name }
+
+        $missing = foreach ($name in $names) {
+            $pattern = "(?ms)^\s*Function\s+$([regex]::Escape($name))\s*\{.*?^\s*\}\s*(?=^\s*Function\s+|\z)"
+            if (-not [regex]::IsMatch($script:SourceContent, $pattern)) { $name }
+        }
+
+        $names.Count | Should -BeGreaterThan 100
+        $missing | Should -BeNullOrEmpty
+    }
+}
+
 Describe 'Console output' {
     It 'only calls Write-Host from Write-HostAndLog, so status messages also reach the logs' {
         $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:SourceFile, [ref]$null, [ref]$null)
